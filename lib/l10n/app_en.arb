@@ -1,0 +1,20 @@
+{
+  "@@locale": "en",
+  "appTitle": "Onboarding App",
+  "settings": "Settings",
+  "manageYourAccount": "Manage Your Account",
+  "devicePermission": "Device Permission",
+  "languageAndTranslations": "Language and Translations",
+  "darkMode": "Dark Mode",
+  "version": "Version",
+  "selectLanguage": "Select Language",
+  "english": "English",
+  "bahasaMelayu": "Bahasa Melayu",
+  "languageChangeNote": "Note: Changing the language will affect all text in the application.",
+  "languageChangedToEnglish": "Language changed to English",
+  "languageChangedToMalay": "Bahasa ditukar kepada Bahasa Melayu",
+  "preferences": "Preferences",
+  "account": "Account",
+  "about": "About",
+  "somethingWentWrong": "Something went wrong!"
+}

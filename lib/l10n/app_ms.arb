@@ -1,0 +1,20 @@
+{
+  "@@locale": "ms",
+  "appTitle": "Aplikasi onboarding",
+  "settings": "Tetapan",
+  "manageYourAccount": "Urus Akaun Anda",
+  "devicePermission": "Kebenaran Peranti",
+  "languageAndTranslations": "Bahasa dan Terjemahan",
+  "darkMode": "Mod Gelap",
+  "version": "Versi",
+  "selectLanguage": "Pilih Bahasa",
+  "english": "English",
+  "bahasaMelayu": "Bahasa Melayu",
+  "languageChangeNote": "Nota: Menukar bahasa akan mempengaruhi semua teks dalam aplikasi.",
+  "languageChangedToEnglish": "Bahasa telah ditukar kepada English",
+  "languageChangedToMalay": "Language changed to Malay",
+  "preferences": "Keutamaan",
+  "account": "Akaun",
+  "about": "Tentang",
+  "somethingWentWrong": "Sesuatu telah berlaku!"
+}
