@@ -118,20 +118,70 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
   }
 
   Future<void> _pickImage() async {
-    if (!_editing) return;
-    
-    final picker = ImagePicker();
+  if (!_editing) return;
+  
+  final picker = ImagePicker();
+  try {
     final XFile? file = await picker.pickImage(
       source: ImageSource.gallery,
-      maxWidth: 800,
-      maxHeight: 800,
-      imageQuality: 80,
+      maxWidth: 1200,
+      maxHeight: 1200,
+      imageQuality: 85,
     );
     
     if (file != null) {
-      setState(() => _pickedImage = File(file.path));
+      final imageFile = File(file.path);
+      final fileSize = await imageFile.length();
+      const maxSize = 10 * 1024 * 1024; // 10MB
+      
+      // Check file size
+      if (fileSize > maxSize) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Image too large. Maximum size is ${maxSize ~/ (1024 * 1024)}MB'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
+        return;
+      }
+      
+      // Check file extension
+      final fileExtension = file.path.split('.').last.toLowerCase();
+      final supportedFormats = SupabaseService.supportedImageFormats;
+      
+      if (!supportedFormats.contains(fileExtension)) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Unsupported format. Supported: ${supportedFormats.join(', ')}',
+              ),
+              backgroundColor: Colors.orange,
+              duration: const Duration(seconds: 4),
+            ),
+          );
+        }
+        return;
+      }
+      
+      setState(() => _pickedImage = imageFile);
+    }
+  } catch (e) {
+    print('Error picking image: $e');
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error selecting image: $e'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 3),
+        ),
+      );
     }
   }
+}
 
   String _formatTimestamp(Timestamp timestamp) {
     final date = timestamp.toDate();
@@ -157,25 +207,23 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
       User? user = _auth.currentUser;
       if (user == null) return;
 
-      // Use the new updateUserProfile method from SupabaseService
-      String? profileImagePath;
-      if (_pickedImage != null) {
-        profileImagePath = await _supabaseService.uploadProfileImage(user.uid, _pickedImage!);
-      }
-
-      await _supabaseService.updateUserProfile(
+      // Use the new updateUserProfileWithImage method that handles old image deletion
+      await _supabaseService.updateUserProfileWithImage(
         uid: user.uid,
         fullName: nameCtrl.text.trim(),
         username: usernameCtrl.text.trim(),
         phoneNumber: phoneCtrl.text.trim(),
-        profileImagePath: profileImagePath,
+        newProfileImage: _pickedImage,
       );
 
       // Also update in Firestore for backward compatibility
       try {
+        // Get the new profile image path to generate URL
+        final newProfileImagePath = await _supabaseService.getCurrentProfileImagePath(user.uid);
         String? profileImageUrl;
-        if (profileImagePath != null) {
-          profileImageUrl = _supabaseService.getPublicUrl('profile-images', profileImagePath) as String?; // Tidak perlu await karena sekarang synchronous
+        
+        if (newProfileImagePath != null && newProfileImagePath.isNotEmpty) {
+          profileImageUrl = _supabaseService.getPublicUrl('profile-images', newProfileImagePath);
         }
 
         await _firestore
@@ -186,6 +234,7 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
               'phoneNumber': phoneCtrl.text.trim(),
               'username': usernameCtrl.text.trim(),
               if (profileImageUrl != null) 'profileImageUrl': profileImageUrl,
+              'updatedAt': FieldValue.serverTimestamp(),
             });
       } catch (e) {
         print("Error updating Firestore: $e");
@@ -208,13 +257,36 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
           _pickedImage = null;
         });
       }
+    } on Exception catch (e) {
+      String errorMessage = 'Error updating profile';
+      
+      // User-friendly error messages
+      if (e.toString().contains('Unsupported image format')) {
+        errorMessage = 'Unsupported image format. Please use JPG, PNG, GIF, WebP, BMP, HEIC, or HEIF.';
+      } else if (e.toString().contains('File too large')) {
+        errorMessage = 'Image too large. Maximum size is 10MB.';
+      } else if (e.toString().contains('Username already taken')) {
+        errorMessage = 'Username already taken. Please choose another one.';
+      } else {
+        errorMessage = 'Error updating profile: ${e.toString().replaceAll('Exception: ', '')}';
+      }
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(errorMessage),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error updating profile: $e'),
+            content: Text('Unexpected error: $e'),
             backgroundColor: Colors.red,
-            duration: Duration(seconds: 3),
+            duration: const Duration(seconds: 4),
           ),
         );
       }

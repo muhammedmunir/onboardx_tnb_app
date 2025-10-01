@@ -8,6 +8,14 @@ class SupabaseService {
 
   final SupabaseClient client = Supabase.instance.client;
 
+  // List of supported image formats
+  static const List<String> supportedImageFormats = [
+    'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'heic', 'heif'
+  ];
+
+  // Maximum file size (10MB)
+  static const int maxFileSize = 10 * 1024 * 1024;
+
   // Get user by uid (returns null if not found)
   Future<Map<String, dynamic>?> getUser(String uid) async {
     try {
@@ -94,7 +102,13 @@ class SupabaseService {
   // Upload file with overwrite option
   Future<String> uploadFileWithOverwrite(String bucket, String path, File file) async {
     try {
-      print('📤 Uploading file with overwrite to bucket: $bucket, path: $path');
+      print('📤 Uploading file to bucket: $bucket, path: $path');
+      
+      // Check file size before upload
+      final fileSize = await file.length();
+      if (fileSize > maxFileSize) {
+        throw Exception('File size too large. Maximum allowed: ${maxFileSize ~/ (1024 * 1024)}MB');
+      }
       
       final response = await client.storage.from(bucket).upload(
         path, 
@@ -104,6 +118,12 @@ class SupabaseService {
       
       print('✅ File uploaded with overwrite successfully: $response');
       return response;
+    } on StorageException catch (e) {
+      print('❌ StorageException during upload: $e');
+      if (e.message.contains('File size limit exceeded')) {
+        throw Exception('File too large. Maximum size is ${maxFileSize ~/ (1024 * 1024)}MB.');
+      }
+      throw Exception('Failed to upload file: ${e.message}');
     } catch (e) {
       print('❌ Failed to upload file with overwrite to bucket $bucket, path $path: $e');
       throw Exception('Failed to upload file: ${e.toString()}');
@@ -170,34 +190,173 @@ class SupabaseService {
     }
   }
 
-  // Upload profile image and return the path
+  // Validate image file
+  Future<void> _validateImageFile(File imageFile) async {
+    // Check if file exists
+    if (!await imageFile.exists()) {
+      throw Exception('Image file does not exist');
+    }
+
+    // Check file size
+    final fileSize = await imageFile.length();
+    if (fileSize > maxFileSize) {
+      throw Exception('Image file too large. Maximum size is ${maxFileSize ~/ (1024 * 1024)}MB.');
+    }
+
+    // Check file extension
+    final fileExtension = imageFile.path.split('.').last.toLowerCase();
+    if (!supportedImageFormats.contains(fileExtension)) {
+      throw Exception(
+        'Unsupported image format. Supported formats: ${supportedImageFormats.join(', ')}'
+      );
+    }
+  }
+
+  // Get file extension from path
+  String _getFileExtension(String path) {
+    try {
+      final extension = path.split('.').last.toLowerCase();
+      return supportedImageFormats.contains(extension) ? extension : 'jpg';
+    } catch (e) {
+      return 'jpg'; // default fallback
+    }
+  }
+
+  // Get file extension from File object
+  String _getFileExtensionFromFile(File file) {
+    return _getFileExtension(file.path);
+  }
+
+  // Get current profile image path for a user
+  Future<String?> getCurrentProfileImagePath(String uid) async {
+    try {
+      final user = await getUser(uid);
+      return user?['profile_image'] as String?;
+    } catch (e) {
+      print('❌ Failed to get current profile image path: $e');
+      return null;
+    }
+  }
+
+  // Upload profile image and delete old one
   Future<String> uploadProfileImage(String uid, File imageFile) async {
+    String? oldImagePath;
+    
     try {
       print('🖼 Starting profile image upload for user: $uid');
       
-      // Validate file
-      if (!await imageFile.exists()) {
-        throw Exception('Image file does not exist');
+      // Validate the image file first
+      await _validateImageFile(imageFile);
+      
+      // Get current profile image path before uploading new one
+      oldImagePath = await getCurrentProfileImagePath(uid);
+      if (oldImagePath != null && oldImagePath.isNotEmpty) {
+        print('📁 Current profile image path: $oldImagePath');
       }
 
-      final fileSize = await imageFile.length();
-      if (fileSize > 5 * 1024 * 1024) {
-        throw Exception('Image file too large. Maximum size is 5MB.');
-      }
-
+      // Get file extension and create new filename
+      final fileExtension = _getFileExtensionFromFile(imageFile);
       final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final fileName = 'profile_$timestamp.jpg';
+      final fileName = 'profile_$timestamp.$fileExtension';
       final path = 'profiles/$uid/$fileName';
       
-      print('📁 Uploading to path: $path');
+      print('📁 Uploading to new path: $path (format: $fileExtension)');
       
+      // Upload new image
       final result = await uploadFileWithOverwrite('profile-images', path, imageFile);
       
       print('✅ Profile image uploaded successfully: $result');
+      
+      // Delete old image if exists and is different from new one
+      if (oldImagePath != null && 
+          oldImagePath.isNotEmpty && 
+          oldImagePath != path &&
+          !oldImagePath.contains('/default/')) { // Don't delete default images
+        await _deleteOldProfileImage(oldImagePath);
+      }
+      
       return path;
     } catch (e) {
       print('❌ Failed to upload profile image: $e');
       throw Exception('Failed to upload profile image: ${e.toString()}');
+    }
+  }
+
+  // Delete old profile image
+  Future<void> _deleteOldProfileImage(String oldImagePath) async {
+    try {
+      print('🗑 Attempting to delete old profile image: $oldImagePath');
+      
+      // Check if file exists before deleting
+      final exists = await fileExists('profile-images', oldImagePath);
+      if (exists) {
+        await deleteFile('profile-images', oldImagePath);
+        print('✅ Old profile image deleted successfully: $oldImagePath');
+      } else {
+        print('ℹ Old profile image not found, skipping deletion: $oldImagePath');
+      }
+    } catch (e) {
+      // Log error but don't throw - we don't want to fail the whole operation
+      // if deleting old image fails
+      print('⚠ Failed to delete old profile image (non-critical): $e');
+    }
+  }
+
+  // Update user profile with image and handle old image deletion
+  Future<void> updateUserProfileWithImage({
+    required String uid,
+    required String fullName,
+    required String username,
+    required String phoneNumber,
+    File? newProfileImage,
+  }) async {
+    String? newProfileImagePath;
+    String? oldProfileImagePath;
+    
+    try {
+      print('👤 Updating user profile for: $uid');
+      
+      // Get current profile image path before any changes
+      oldProfileImagePath = await getCurrentProfileImagePath(uid);
+
+      // Upload new image if provided
+      if (newProfileImage != null) {
+        newProfileImagePath = await uploadProfileImage(uid, newProfileImage);
+      }
+
+      final updateData = {
+        'full_name': fullName,
+        'username': username,
+        'phone_number': phoneNumber,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+        if (newProfileImagePath != null) 'profile_image': newProfileImagePath,
+      };
+
+      await updateUser(uid, updateData);
+      print('✅ User profile updated successfully');
+
+      // Delete old image only after successful update
+      if (newProfileImage != null && 
+          oldProfileImagePath != null && 
+          oldProfileImagePath.isNotEmpty &&
+          newProfileImagePath != oldProfileImagePath) {
+        await _deleteOldProfileImage(oldProfileImagePath);
+      }
+
+    } catch (e) {
+      print('❌ Failed to update user profile: $e');
+      
+      // If update failed but new image was uploaded, try to clean up
+      if (newProfileImagePath != null) {
+        print('🔄 Cleaning up newly uploaded image due to failure: $newProfileImagePath');
+        try {
+          await deleteFile('profile-images', newProfileImagePath);
+        } catch (cleanupError) {
+          print('⚠ Failed to cleanup new image: $cleanupError');
+        }
+      }
+      
+      throw Exception('Failed to update user profile: $e');
     }
   }
 
@@ -222,6 +381,37 @@ class SupabaseService {
       throw Exception('Failed to get user profile: $e');
     }
   }
+
+  // Clean up orphaned profile images (optional - for maintenance)
+Future<void> cleanupOrphanedProfileImages() async {
+  try {
+    // Get all profile images from storage
+    final allImages = await client.storage.from('profile-images').list();
+    
+    // Get all users with profile images from database
+    final users = await client.from('users').select('profile_image');
+    
+    final usedImagePaths = users
+        .where((user) => user['profile_image'] != null)
+        .map((user) => user['profile_image'] as String)
+        .toSet();
+    
+    // Find orphaned images (in storage but not in database)
+    final orphanedImages = allImages.where(
+      (image) => !usedImagePaths.contains(image.name)
+    ).toList();
+    
+    // Delete orphaned images
+    for (final image in orphanedImages) {
+      print('🗑 Deleting orphaned image: ${image.name}');
+      await deleteFile('profile-images', image.name);
+    }
+    
+    print('✅ Cleanup completed. Deleted ${orphanedImages.length} orphaned images');
+  } catch (e) {
+    print('❌ Failed to cleanup orphaned images: $e');
+  }
+}
 
   // Projects operations
   Future<List<Map<String, dynamic>>> getProjects() async {
