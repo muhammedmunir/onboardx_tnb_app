@@ -1,7 +1,7 @@
+// manage_your_account_screen.dart
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import 'package:onboardx_tnb_app/services/supabase_service.dart';
@@ -25,7 +25,6 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
   bool _editing = false;
   bool _loading = true;
   final FirebaseAuth _auth = FirebaseAuth.instance;
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final SupabaseService _supabaseService = SupabaseService();
   Map<String, dynamic> _userData = {};
 
@@ -44,7 +43,7 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
     try {
       User? user = _auth.currentUser;
       if (user != null) {
-        // Try to fetch from Supabase first using the new getUserProfile method
+        // Fetch from Supabase only
         final userProfile = await _supabaseService.getUserProfile(user.uid);
         
         if (userProfile != null) {
@@ -58,9 +57,6 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
               'workplace': userProfile['work_place'] ?? '',
               'workType': userProfile['work_type'] ?? '',
               'profileImageUrl': userProfile['profile_image_url'],
-              'createdAt': userProfile['created_at'] != null 
-                  ? Timestamp.fromDate(DateTime.parse(userProfile['created_at']))
-                  : null,
               'created_at': userProfile['created_at'],
             };
             
@@ -70,30 +66,14 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
             _loading = false;
           });
         } else {
-          // Fallback to Firestore if no Supabase data
-          DocumentSnapshot userDoc = await _firestore
-              .collection('users')
-              .doc(user.uid)
-              .get();
-
-          if (userDoc.exists) {
-            setState(() {
-              _userData = userDoc.data() as Map<String, dynamic>;
-              nameCtrl.text = _userData['fullName'] ?? '';
-              phoneCtrl.text = _userData['phoneNumber'] ?? '';
-              usernameCtrl.text = _userData['username'] ?? '';
-              _loading = false;
-            });
-          } else {
-            // If no data anywhere, use data from widget.user
-            setState(() {
-              _userData = widget.user;
-              nameCtrl.text = _userData['fullName'] ?? '';
-              phoneCtrl.text = _userData['phoneNumber'] ?? '';
-              usernameCtrl.text = _userData['username'] ?? '';
-              _loading = false;
-            });
-          }
+          // If no data in Supabase, use data from widget.user
+          setState(() {
+            _userData = widget.user;
+            nameCtrl.text = _userData['fullName'] ?? '';
+            phoneCtrl.text = _userData['phoneNumber'] ?? '';
+            usernameCtrl.text = _userData['username'] ?? '';
+            _loading = false;
+          });
         }
       }
     } catch (e) {
@@ -118,75 +98,69 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
   }
 
   Future<void> _pickImage() async {
-  if (!_editing) return;
-  
-  final picker = ImagePicker();
-  try {
-    final XFile? file = await picker.pickImage(
-      source: ImageSource.gallery,
-      maxWidth: 1200,
-      maxHeight: 1200,
-      imageQuality: 85,
-    );
+    if (!_editing) return;
     
-    if (file != null) {
-      final imageFile = File(file.path);
-      final fileSize = await imageFile.length();
-      const maxSize = 10 * 1024 * 1024; // 10MB
-      
-      // Check file size
-      if (fileSize > maxSize) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Image too large. Maximum size is ${maxSize ~/ (1024 * 1024)}MB'),
-              backgroundColor: Colors.orange,
-              duration: Duration(seconds: 3),
-            ),
-          );
-        }
-        return;
-      }
-      
-      // Check file extension
-      final fileExtension = file.path.split('.').last.toLowerCase();
-      final supportedFormats = SupabaseService.supportedImageFormats;
-      
-      if (!supportedFormats.contains(fileExtension)) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                'Unsupported format. Supported: ${supportedFormats.join(', ')}',
-              ),
-              backgroundColor: Colors.orange,
-              duration: const Duration(seconds: 4),
-            ),
-          );
-        }
-        return;
-      }
-      
-      setState(() => _pickedImage = imageFile);
-    }
-  } catch (e) {
-    print('Error picking image: $e');
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error selecting image: $e'),
-          backgroundColor: Colors.red,
-          duration: const Duration(seconds: 3),
-        ),
+    final picker = ImagePicker();
+    try {
+      final XFile? file = await picker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 1200,
+        maxHeight: 1200,
+        imageQuality: 85,
       );
+      
+      if (file != null) {
+        final imageFile = File(file.path);
+        final fileSize = await imageFile.length();
+        const maxSize = 10 * 1024 * 1024; // 10MB
+        
+        // Check file size
+        if (fileSize > maxSize) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Image too large. Maximum size is 10MB'),
+                backgroundColor: Colors.orange,
+                duration: Duration(seconds: 3),
+              ),
+            );
+          }
+          return;
+        }
+        
+        // Check file extension
+        final fileExtension = file.path.split('.').last.toLowerCase();
+        final supportedFormats = SupabaseService.supportedImageFormats;
+        
+        if (!supportedFormats.contains(fileExtension)) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  'Unsupported format. Supported: ${supportedFormats.join(', ')}',
+                ),
+                backgroundColor: Colors.orange,
+                duration: const Duration(seconds: 4),
+              ),
+            );
+          }
+          return;
+        }
+        
+        setState(() => _pickedImage = imageFile);
+      }
+    } catch (e) {
+      print('Error picking image: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error selecting image: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
     }
-  }
-}
-
-  String _formatTimestamp(Timestamp timestamp) {
-    final date = timestamp.toDate();
-    final format = DateFormat('dd MMMM yyyy \'at\' HH:mm:ss');
-    return format.format(date);
   }
 
   String _formatDateTime(String dateTimeString) {
@@ -215,31 +189,6 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
         phoneNumber: phoneCtrl.text.trim(),
         newProfileImage: _pickedImage,
       );
-
-      // Also update in Firestore for backward compatibility
-      try {
-        // Get the new profile image path to generate URL
-        final newProfileImagePath = await _supabaseService.getCurrentProfileImagePath(user.uid);
-        String? profileImageUrl;
-        
-        if (newProfileImagePath != null && newProfileImagePath.isNotEmpty) {
-          profileImageUrl = _supabaseService.getPublicUrl('profile-images', newProfileImagePath);
-        }
-
-        await _firestore
-            .collection('users')
-            .doc(user.uid)
-            .update({
-              'fullName': nameCtrl.text.trim(),
-              'phoneNumber': phoneCtrl.text.trim(),
-              'username': usernameCtrl.text.trim(),
-              if (profileImageUrl != null) 'profileImageUrl': profileImageUrl,
-              'updatedAt': FieldValue.serverTimestamp(),
-            });
-      } catch (e) {
-        print("Error updating Firestore: $e");
-        // Continue even if Firestore update fails
-      }
 
       // Refresh user data after update
       await _fetchUserData();
@@ -365,7 +314,6 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
         : const Color.fromRGBO(224, 124, 124, 1);
     final cardColor = theme.cardColor;
 
-    final Timestamp? createdAt = _userData['createdAt'];
     final String? createdAtString = _userData['created_at'];
 
     if (_loading) {
@@ -628,11 +576,9 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
                         const Text('Created at'),
                         const Spacer(),
                         Text(
-                          createdAt != null 
-                            ? _formatTimestamp(createdAt)
-                            : (createdAtString != null 
-                                ? _formatDateTime(createdAtString)
-                                : 'Unknown'),
+                          createdAtString != null 
+                              ? _formatDateTime(createdAtString)
+                              : 'Unknown',
                           style: TextStyle(
                             color: Theme.of(context).textTheme.bodySmall?.color,
                           ),
