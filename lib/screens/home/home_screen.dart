@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:curved_navigation_bar/curved_navigation_bar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/svg.dart';
@@ -81,10 +82,14 @@ class _HomeScreenState extends State<HomeScreen> {
         if (!mounted) return;
         
         if (supabaseData != null && supabaseData is Map<String, dynamic>) {
-          // Process profile image URL if exists
+          // Process profile image URL if exists with cache busting
           String? profileImageUrl;
           if (supabaseData['profile_image'] != null && supabaseData['profile_image'].isNotEmpty) {
             profileImageUrl = _supabaseService.getPublicUrl('profiles', supabaseData['profile_image']) as String?;
+            // Add timestamp for cache busting
+            if (profileImageUrl != null) {
+              profileImageUrl += '?t=${DateTime.now().millisecondsSinceEpoch}';
+            }
           }
 
           // Merge data: Supabase data will override Firestore data for same fields
@@ -275,7 +280,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-// Home Content Widget (With Profile Image Support)
+// Home Content Widget (With Enhanced Profile Image Support)
 class HomeContent extends StatefulWidget {
   const HomeContent({super.key});
 
@@ -283,10 +288,11 @@ class HomeContent extends StatefulWidget {
   State<HomeContent> createState() => _HomeContentState();
 }
 
-class _HomeContentState extends State<HomeContent> {
+class _HomeContentState extends State<HomeContent> with WidgetsBindingObserver {
   bool _isHeaderExpanded = false;
   Map<String, dynamic>? _userData;
   Color? primaryColor;
+  File? _pickedImage; // Untuk menangani image yang baru dipilih
   
   // Add SupabaseService
   final SupabaseService _supabaseService = SupabaseService();
@@ -295,6 +301,21 @@ class _HomeContentState extends State<HomeContent> {
   void initState() {
     super.initState();
     _loadUserData(); // Load data when widget initializes
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Refresh data when app comes to foreground
+      _loadUserData();
+    }
   }
 
   // Combined function to load user data from both sources
@@ -320,10 +341,14 @@ class _HomeContentState extends State<HomeContent> {
         if (!mounted) return;
         
         if (supabaseData != null && supabaseData is Map<String, dynamic>) {
-          // Process profile image URL if exists
+          // Process profile image URL if exists with cache busting
           String? profileImageUrl;
           if (supabaseData['profile_image'] != null && supabaseData['profile_image'].isNotEmpty) {
             profileImageUrl = _supabaseService.getPublicUrl('profiles', supabaseData['profile_image']) as String?;
+            // Add timestamp for cache busting to ensure fresh image
+            if (profileImageUrl != null) {
+              profileImageUrl += '?t=${DateTime.now().millisecondsSinceEpoch}';
+            }
           }
 
           // Merge data: Supabase data will override Firestore data for same fields
@@ -355,6 +380,16 @@ class _HomeContentState extends State<HomeContent> {
     } catch (e) {
       print("Error loading user data in HomeContent: $e");
     }
+  }
+
+  // Function to update profile image when returning from ManageAccountScreen
+  void _updateProfileData(Map<String, dynamic>? updatedData) {
+    if (!mounted) return;
+    setState(() {
+      if (updatedData != null) {
+        _userData = {...?_userData, ...updatedData};
+      }
+    });
   }
 
   Future<void> _signOut() async {
@@ -544,20 +579,45 @@ class _HomeContentState extends State<HomeContent> {
     );
   }
 
-  // Widget untuk CircleAvatar dengan profile image
+  // Enhanced Widget untuk CircleAvatar dengan profile image
   Widget _buildProfileAvatar({required double radius, required double iconSize}) {
     final String? profileImageUrl = _userData?['profileImageUrl'];
     
-    if (profileImageUrl != null && profileImageUrl.isNotEmpty) {
-      // Jika ada profile image URL, tampilkan NetworkImage
+    if (_pickedImage != null) {
+      // Jika ada image yang baru dipilih (dari manage account)
+      return CircleAvatar(
+        radius: radius,
+        backgroundImage: FileImage(_pickedImage!),
+      );
+    } else if (profileImageUrl != null && profileImageUrl.isNotEmpty) {
+      // Jika ada profile image URL dari Supabase
       return CircleAvatar(
         radius: radius,
         backgroundColor: Colors.white,
-        backgroundImage: NetworkImage(profileImageUrl),
-        onBackgroundImageError: (exception, stackTrace) {
-          // Fallback ke icon jika image gagal load
-          print("Error loading profile image: $exception");
-        },
+        child: ClipOval(
+          child: Image.network(
+            profileImageUrl,
+            width: radius * 2,
+            height: radius * 2,
+            fit: BoxFit.cover,
+            loadingBuilder: (context, child, loadingProgress) {
+              if (loadingProgress == null) return child;
+              return Center(
+                child: CircularProgressIndicator(
+                  value: loadingProgress.expectedTotalBytes != null
+                      ? loadingProgress.cumulativeBytesLoaded / loadingProgress.expectedTotalBytes!
+                      : null,
+                  color: primaryColor,
+                ),
+              );
+            },
+            errorBuilder: (context, error, stackTrace) {
+              print("Error loading profile image: $error");
+              // Fallback ke default avatar jika error
+              return Icon(Icons.person, size: iconSize, color: Colors.grey);
+            },
+          ),
+        ),
       );
     } else {
       // Jika tidak ada profile image, tampilkan icon default
@@ -576,14 +636,17 @@ class _HomeContentState extends State<HomeContent> {
       children: [
         Icon(icon, color: Colors.white, size: 20),
         const SizedBox(width: 10),
-        Text(
-          text,
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 16,
+        Expanded(
+          child: Text(
+            text,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 16,
+            ),
+            textAlign: TextAlign.center,
+            overflow: TextOverflow.ellipsis,
+            maxLines: 2,
           ),
-          textAlign: TextAlign.center,
-          overflow: TextOverflow.ellipsis,
         ),
       ],
     );
