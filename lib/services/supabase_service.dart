@@ -15,11 +15,11 @@ class SupabaseService {
           .from('users')
           .select()
           .eq('uid', uid)
-          .maybeSingle(); // <-- returns null if 0 rows
+          .maybeSingle();
       if (response == null) return null;
       return Map<String, dynamic>.from(response as Map);
     } catch (e) {
-      print('Failed to get user: $e');
+      print('❌ Failed to get user: $e');
       throw Exception('Failed to get user: $e');
     }
   }
@@ -39,7 +39,7 @@ class SupabaseService {
           .from('users')
           .insert(userData)
           .select()
-          .maybeSingle(); // should return the inserted row
+          .maybeSingle();
 
       if (inserted == null) {
         throw Exception('Insert returned no row');
@@ -47,7 +47,7 @@ class SupabaseService {
 
       return Map<String, dynamic>.from(inserted as Map);
     } catch (e) {
-      print('Failed to create user: $e');
+      print('❌ Failed to create user: $e');
       throw Exception('Failed to create user: $e');
     }
   }
@@ -56,7 +56,7 @@ class SupabaseService {
     try {
       await client.from('users').update(updates).eq('uid', uid);
     } catch (e) {
-      print('Failed to update user: $e');
+      print('❌ Failed to update user: $e');
       throw Exception('Failed to update user: $e');
     }
   }
@@ -71,47 +71,58 @@ class SupabaseService {
           .maybeSingle();
       return response != null;
     } catch (e) {
-      print('Failed to check username: $e');
+      print('❌ Failed to check username: $e');
       throw Exception('Failed to check username: $e');
     }
   }
 
-  // File upload operations - UPDATED FOR profile-images BUCKET
+  // File upload operations
   Future<String> uploadFile(String bucket, String path, File file) async {
     try {
+      print('📤 Uploading file to bucket: $bucket, path: $path');
+      
       final response = await client.storage.from(bucket).upload(path, file);
+      
+      print('✅ File uploaded successfully: $response');
       return response;
     } catch (e) {
-      print('Failed to upload file to bucket $bucket, path $path: $e');
-      throw Exception('Failed to upload file: $e');
+      print('❌ Failed to upload file to bucket $bucket, path $path: $e');
+      throw Exception('Failed to upload file: ${e.toString()}');
     }
   }
 
-  // NEW: Upload file with overwrite option
+  // Upload file with overwrite option
   Future<String> uploadFileWithOverwrite(String bucket, String path, File file) async {
     try {
+      print('📤 Uploading file with overwrite to bucket: $bucket, path: $path');
+      
       final response = await client.storage.from(bucket).upload(
         path, 
         file,
         fileOptions: const FileOptions(upsert: true),
       );
+      
+      print('✅ File uploaded with overwrite successfully: $response');
       return response;
     } catch (e) {
-      print('Failed to upload file with overwrite to bucket $bucket, path $path: $e');
-      throw Exception('Failed to upload file: $e');
+      print('❌ Failed to upload file with overwrite to bucket $bucket, path $path: $e');
+      throw Exception('Failed to upload file: ${e.toString()}');
     }
   }
 
-  Future<String> getPublicUrl(String bucket, String path) async {
+  // UBAH INI: getPublicUrl menjadi synchronous karena di Supabase ini synchronous operation
+  String getPublicUrl(String bucket, String path) {
     try {
-      return client.storage.from(bucket).getPublicUrl(path);
+      final url = client.storage.from(bucket).getPublicUrl(path);
+      print('🔗 Generated public URL: $url');
+      return url;
     } catch (e) {
-      print('Failed to get public URL for bucket $bucket, path $path: $e');
+      print('❌ Failed to get public URL for bucket $bucket, path $path: $e');
       throw Exception('Failed to get public URL: $e');
     }
   }
 
-  // NEW: Check if file exists in storage
+  // Check if file exists in storage
   Future<bool> fileExists(String bucket, String path) async {
     try {
       final response = await client.storage.from(bucket).list(path: path);
@@ -125,13 +136,14 @@ class SupabaseService {
   Future<void> deleteFile(String bucket, String path) async {
     try {
       await client.storage.from(bucket).remove([path]);
+      print('🗑 File deleted: $path from bucket: $bucket');
     } catch (e) {
-      print('Failed to delete file from bucket $bucket, path $path: $e');
+      print('❌ Failed to delete file from bucket $bucket, path $path: $e');
       throw Exception('Failed to delete file: $e');
     }
   }
 
-  // NEW: Update user profile with image
+  // Update user profile with image
   Future<void> updateUserProfile({
     required String uid,
     required String fullName,
@@ -140,6 +152,8 @@ class SupabaseService {
     String? profileImagePath,
   }) async {
     try {
+      print('👤 Updating user profile for: $uid');
+      
       final updateData = {
         'full_name': fullName,
         'username': username,
@@ -149,54 +163,65 @@ class SupabaseService {
       };
 
       await updateUser(uid, updateData);
+      print('✅ User profile updated successfully');
     } catch (e) {
-      print('Failed to update user profile: $e');
+      print('❌ Failed to update user profile: $e');
       throw Exception('Failed to update user profile: $e');
     }
   }
 
-  // NEW: Upload profile image and return the path
+  // Upload profile image and return the path
   Future<String> uploadProfileImage(String uid, File imageFile) async {
     try {
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final fileName = '${uid}_$timestamp.jpg';
-      final path = 'profiles/$fileName';
+      print('🖼 Starting profile image upload for user: $uid');
       
-      await uploadFileWithOverwrite('profile-images', path, imageFile);
+      // Validate file
+      if (!await imageFile.exists()) {
+        throw Exception('Image file does not exist');
+      }
+
+      final fileSize = await imageFile.length();
+      if (fileSize > 5 * 1024 * 1024) {
+        throw Exception('Image file too large. Maximum size is 5MB.');
+      }
+
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final fileName = 'profile_$timestamp.jpg';
+      final path = 'profiles/$uid/$fileName';
+      
+      print('📁 Uploading to path: $path');
+      
+      final result = await uploadFileWithOverwrite('profile-images', path, imageFile);
+      
+      print('✅ Profile image uploaded successfully: $result');
       return path;
     } catch (e) {
-      print('Failed to upload profile image: $e');
-      throw Exception('Failed to upload profile image: $e');
+      print('❌ Failed to upload profile image: $e');
+      throw Exception('Failed to upload profile image: ${e.toString()}');
     }
   }
 
-  // NEW: Get user profile with image URL
+  // PERBAIKAN UTAMA: Get user profile with image URL - TAMBAHKAN AWAIT
   Future<Map<String, dynamic>?> getUserProfile(String uid) async {
-  try {
-    final userData = await getUser(uid);
-    if (userData == null) return null;
+    try {
+      final userData = await getUser(uid);
+      if (userData == null) return null;
 
-    // Add profile image URL if exists
-    if (userData['profile_image'] != null && (userData['profile_image'] as String).isNotEmpty) {
-      try {
-        // getPublicUrl is synchronous, no need for await
-        userData['profile_image_url'] = getPublicUrl('profile-images', userData['profile_image'] as String);
+      // Add profile image URL if exists - INI PERBAIKAN UTAMA
+      if (userData['profile_image'] != null && userData['profile_image'].isNotEmpty) {
+        // TAMBAHKAN AWAIT di sini karena getPublicUrl sekarang synchronous
+        userData['profile_image_url'] = getPublicUrl('profile-images', userData['profile_image']);
         print('🖼 Profile image URL: ${userData['profile_image_url']}');
-      } catch (e) {
-        print('❌ Error generating profile image URL: $e');
-        userData['profile_image_url'] = null;
+      } else {
+        print('ℹ No profile image found for user');
       }
-    } else {
-      print('ℹ No profile image found for user');
-      userData['profile_image_url'] = null;
-    }
 
-    return userData;
-  } catch (e) {
-    print('❌ Failed to get user profile: $e');
-    throw Exception('Failed to get user profile: $e');
+      return userData;
+    } catch (e) {
+      print('❌ Failed to get user profile: $e');
+      throw Exception('Failed to get user profile: $e');
+    }
   }
-}
 
   // Projects operations
   Future<List<Map<String, dynamic>>> getProjects() async {
@@ -204,7 +229,7 @@ class SupabaseService {
       final response = await client.from('projects').select();
       return response;
     } catch (e) {
-      print('Failed to get projects: $e');
+      print('❌ Failed to get projects: $e');
       throw Exception('Failed to get projects: $e');
     }
   }
@@ -218,7 +243,7 @@ class SupabaseService {
       ''');
       return response;
     } catch (e) {
-      print('Failed to get tasks: $e');
+      print('❌ Failed to get tasks: $e');
       throw Exception('Failed to get tasks: $e');
     }
   }
@@ -232,7 +257,7 @@ class SupabaseService {
       ''');
       return response;
     } catch (e) {
-      print('Failed to get learnings: $e');
+      print('❌ Failed to get learnings: $e');
       throw Exception('Failed to get learnings: $e');
     }
   }
@@ -242,7 +267,7 @@ class SupabaseService {
     try {
       await client.from('progress').upsert(progressData);
     } catch (e) {
-      print('Failed to update progress: $e');
+      print('❌ Failed to update progress: $e');
       throw Exception('Failed to update progress: $e');
     }
   }
@@ -260,7 +285,7 @@ class SupabaseService {
           .eq('userId', userId);
       return response;
     } catch (e) {
-      print('Failed to get user progress: $e');
+      print('❌ Failed to get user progress: $e');
       throw Exception('Failed to get user progress: $e');
     }
   }

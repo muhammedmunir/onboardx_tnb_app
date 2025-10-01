@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:intl/intl.dart';
 import 'package:onboardx_tnb_app/services/supabase_service.dart';
 
@@ -35,6 +34,9 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
   @override
   void initState() {
     super.initState();
+    nameCtrl = TextEditingController();
+    phoneCtrl = TextEditingController();
+    usernameCtrl = TextEditingController();
     _fetchUserData();
   }
 
@@ -42,34 +44,29 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
     try {
       User? user = _auth.currentUser;
       if (user != null) {
-        // Try to fetch from Supabase first
-        final supabaseData = await _supabaseService.getUser(user.uid);
+        // Try to fetch from Supabase first using the new getUserProfile method
+        final userProfile = await _supabaseService.getUserProfile(user.uid);
         
-        if (supabaseData != null) {
-          // Process profile image URL if exists
-          String? profileImageUrl;
-          if (supabaseData['profile_image'] != null && supabaseData['profile_image'].isNotEmpty) {
-            profileImageUrl = _supabaseService.getPublicUrl('profiles', supabaseData['profile_image']) as String?;
-          }
-
+        if (userProfile != null) {
           setState(() {
             _userData = {
-              'fullName': supabaseData['full_name'] ?? '',
-              'username': supabaseData['username'] ?? '',
-              'email': supabaseData['email'] ?? '',
-              'phoneNumber': supabaseData['phone_number'] ?? '',
-              'workUnit': supabaseData['work_unit'] ?? '',
-              'workplace': supabaseData['work_place'] ?? '',
-              'workType': supabaseData['work_type'] ?? '',
-              'profileImageUrl': profileImageUrl,
-              'createdAt': supabaseData['created_at'] != null 
-                  ? Timestamp.fromDate(DateTime.parse(supabaseData['created_at']))
+              'fullName': userProfile['full_name'] ?? '',
+              'username': userProfile['username'] ?? '',
+              'email': userProfile['email'] ?? '',
+              'phoneNumber': userProfile['phone_number'] ?? '',
+              'workUnit': userProfile['work_unit'] ?? '',
+              'workplace': userProfile['work_place'] ?? '',
+              'workType': userProfile['work_type'] ?? '',
+              'profileImageUrl': userProfile['profile_image_url'],
+              'createdAt': userProfile['created_at'] != null 
+                  ? Timestamp.fromDate(DateTime.parse(userProfile['created_at']))
                   : null,
+              'created_at': userProfile['created_at'],
             };
             
-            nameCtrl = TextEditingController(text: _userData['fullName'] ?? '');
-            phoneCtrl = TextEditingController(text: _userData['phoneNumber'] ?? '');
-            usernameCtrl = TextEditingController(text: _userData['username'] ?? '');
+            nameCtrl.text = _userData['fullName'] ?? '';
+            phoneCtrl.text = _userData['phoneNumber'] ?? '';
+            usernameCtrl.text = _userData['username'] ?? '';
             _loading = false;
           });
         } else {
@@ -82,18 +79,18 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
           if (userDoc.exists) {
             setState(() {
               _userData = userDoc.data() as Map<String, dynamic>;
-              nameCtrl = TextEditingController(text: _userData['fullName'] ?? '');
-              phoneCtrl = TextEditingController(text: _userData['phoneNumber'] ?? '');
-              usernameCtrl = TextEditingController(text: _userData['username'] ?? '');
+              nameCtrl.text = _userData['fullName'] ?? '';
+              phoneCtrl.text = _userData['phoneNumber'] ?? '';
+              usernameCtrl.text = _userData['username'] ?? '';
               _loading = false;
             });
           } else {
             // If no data anywhere, use data from widget.user
             setState(() {
               _userData = widget.user;
-              nameCtrl = TextEditingController(text: _userData['fullName'] ?? '');
-              phoneCtrl = TextEditingController(text: _userData['phoneNumber'] ?? '');
-              usernameCtrl = TextEditingController(text: _userData['username'] ?? '');
+              nameCtrl.text = _userData['fullName'] ?? '';
+              phoneCtrl.text = _userData['phoneNumber'] ?? '';
+              usernameCtrl.text = _userData['username'] ?? '';
               _loading = false;
             });
           }
@@ -104,9 +101,9 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
       // Fallback to widget.user data if error occurs
       setState(() {
         _userData = widget.user;
-        nameCtrl = TextEditingController(text: _userData['fullName'] ?? '');
-        phoneCtrl = TextEditingController(text: _userData['phoneNumber'] ?? '');
-        usernameCtrl = TextEditingController(text: _userData['username'] ?? '');
+        nameCtrl.text = _userData['fullName'] ?? '';
+        phoneCtrl.text = _userData['phoneNumber'] ?? '';
+        usernameCtrl.text = _userData['username'] ?? '';
         _loading = false;
       });
     }
@@ -124,7 +121,13 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
     if (!_editing) return;
     
     final picker = ImagePicker();
-    final XFile? file = await picker.pickImage(source: ImageSource.gallery);
+    final XFile? file = await picker.pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 800,
+      maxHeight: 800,
+      imageQuality: 80,
+    );
+    
     if (file != null) {
       setState(() => _pickedImage = File(file.path));
     }
@@ -154,30 +157,27 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
       User? user = _auth.currentUser;
       if (user == null) return;
 
-      String? imagePath;
-      
-      // Upload image to Supabase Storage if selected
+      // Use the new updateUserProfile method from SupabaseService
+      String? profileImagePath;
       if (_pickedImage != null) {
-        final fileName = '${user.uid}_${DateTime.now().millisecondsSinceEpoch}.jpg';
-        imagePath = 'profiles/$fileName';
-        
-        await _supabaseService.uploadFile('profiles', imagePath, _pickedImage!);
+        profileImagePath = await _supabaseService.uploadProfileImage(user.uid, _pickedImage!);
       }
 
-      // Prepare update data for Supabase
-      final updateData = {
-        'full_name': nameCtrl.text.trim(),
-        'phone_number': phoneCtrl.text.trim(),
-        'username': usernameCtrl.text.trim(),
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-        if (imagePath != null) 'profile_image': imagePath,
-      };
-
-      // Update user data in Supabase
-      await _supabaseService.updateUser(user.uid, updateData);
+      await _supabaseService.updateUserProfile(
+        uid: user.uid,
+        fullName: nameCtrl.text.trim(),
+        username: usernameCtrl.text.trim(),
+        phoneNumber: phoneCtrl.text.trim(),
+        profileImagePath: profileImagePath,
+      );
 
       // Also update in Firestore for backward compatibility
       try {
+        String? profileImageUrl;
+        if (profileImagePath != null) {
+          profileImageUrl = _supabaseService.getPublicUrl('profile-images', profileImagePath) as String?; // Tidak perlu await karena sekarang synchronous
+        }
+
         await _firestore
             .collection('users')
             .doc(user.uid)
@@ -185,7 +185,7 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
               'fullName': nameCtrl.text.trim(),
               'phoneNumber': phoneCtrl.text.trim(),
               'username': usernameCtrl.text.trim(),
-              if (imagePath != null) 'profileImageUrl': _supabaseService.getPublicUrl('profiles', imagePath),
+              if (profileImageUrl != null) 'profileImageUrl': profileImageUrl,
             });
       } catch (e) {
         print("Error updating Firestore: $e");
@@ -200,9 +200,13 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
           const SnackBar(
             content: Text('Profile updated successfully'),
             backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
           ),
         );
-        setState(() => _editing = false);
+        setState(() {
+          _editing = false;
+          _pickedImage = null;
+        });
       }
     } catch (e) {
       if (mounted) {
@@ -210,6 +214,7 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
           SnackBar(
             content: Text('Error updating profile: $e'),
             backgroundColor: Colors.red,
+            duration: Duration(seconds: 3),
           ),
         );
       }
@@ -295,8 +300,20 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
       return Scaffold(
         backgroundColor: theme.scaffoldBackgroundColor,
         body: Center(
-          child: CircularProgressIndicator(
-            color: primaryColor,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(
+                color: primaryColor,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Loading profile...',
+                style: TextStyle(
+                  color: theme.textTheme.bodyLarge?.color,
+                ),
+              ),
+            ],
           ),
         ),
       );
@@ -338,6 +355,7 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
               onPressed: () {
                 setState(() => _editing = true);
               },
+              tooltip: 'Edit Profile',
             ),
           if (_editing)
             IconButton(
@@ -352,6 +370,7 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
                   _pickedImage = null;
                 });
               },
+              tooltip: 'Cancel Editing',
             ),
         ],
       ),
@@ -359,56 +378,73 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
         child: Column(
           children: [
             const SizedBox(height: 16),
-            // Profile Image
-            GestureDetector(
-              onTap: _pickImage,
-              child: Stack(
-                children: [
-                  // Use your preferred default avatar
-                  if (_pickedImage != null)
-                    CircleAvatar(
-                      radius: 48,
-                      backgroundImage: FileImage(_pickedImage!),
-                    )
-                  else if (_userData['profileImageUrl'] != null && _userData['profileImageUrl'].isNotEmpty)
-                    CircleAvatar(
-                      radius: 48,
-                      backgroundImage: NetworkImage(_userData['profileImageUrl']),
-                      onBackgroundImageError: (exception, stackTrace) {
-                        print("Error loading profile image: $exception");
-                      },
-                    )
-                  else
-                    CircleAvatar(
-                      radius: 48,
-                      backgroundColor: Colors.white,
-                      child: Icon(Icons.person, size: 40, color: Colors.grey),
-                    ),
-                  if (_editing)
-                    Positioned(
-                      bottom: 0,
-                      right: 0,
-                      child: Container(
-                        padding: const EdgeInsets.all(6),
-                        decoration: BoxDecoration(
-                          color: primaryColor,
-                          shape: BoxShape.circle,
+            
+            // Profile Image Section
+            Column(
+              children: [
+                GestureDetector(
+                  onTap: _pickImage,
+                  child: Stack(
+                    children: [
+                      // Profile Image with different states
+                      if (_pickedImage != null)
+                        CircleAvatar(
+                          radius: 48,
+                          backgroundImage: FileImage(_pickedImage!),
+                        )
+                      else if (_userData['profileImageUrl'] != null && _userData['profileImageUrl'].isNotEmpty)
+                        CircleAvatar(
+                          radius: 48,
+                          backgroundImage: NetworkImage(_userData['profileImageUrl']),
+                          onBackgroundImageError: (exception, stackTrace) {
+                            print("Error loading profile image: $exception");
+                          },
+                        )
+                      else
+                        const CircleAvatar(
+                          radius: 48,
+                          backgroundColor: Colors.white,
+                          child: Icon(Icons.person, size: 40, color: Colors.grey),
                         ),
-                        child: const Icon(
-                          Icons.camera_alt,
-                          size: 20,
-                          color: Colors.white,
+                      
+                      // Camera icon for editing
+                      if (_editing)
+                        Positioned(
+                          bottom: 0,
+                          right: 0,
+                          child: Container(
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                              color: primaryColor,
+                              shape: BoxShape.circle,
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.2),
+                                  blurRadius: 4,
+                                  offset: const Offset(0, 2),
+                                ),
+                              ],
+                            ),
+                            child: const Icon(
+                              Icons.camera_alt,
+                              size: 20,
+                              color: Colors.white,
+                            ),
+                          ),
                         ),
-                      ),
-                    ),
-                ],
-              ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _editing ? 'Tap avatar to change photo' : '',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 8),
-            Text(
-              _editing ? 'Tap avatar to change' : '',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
+            
             const SizedBox(height: 24),
 
             Form(
@@ -425,13 +461,16 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
                             controller: usernameCtrl,
                             decoration: InputDecoration(
                               labelText: 'Username',
-                              border: OutlineInputBorder(),
+                              hintText: 'Enter your username',
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
                               filled: true,
                               fillColor: cardColor,
                               prefixIcon: Icon(Icons.person, color: primaryColor),
                             ),
                             validator: (v) =>
-                                (v ?? '').trim().isEmpty ? 'Username required' : null,
+                                (v ?? '').trim().isEmpty ? 'Username is required' : null,
                           )
                         : _buildReadOnlyField('Username', _userData['username'] ?? ''),
                   ),
@@ -445,13 +484,16 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
                             controller: nameCtrl,
                             decoration: InputDecoration(
                               labelText: 'Full Name',
-                              border: OutlineInputBorder(),
+                              hintText: 'Enter your full name',
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
                               filled: true,
                               fillColor: cardColor,
                               prefixIcon: Icon(Icons.badge, color: primaryColor),
                             ),
                             validator: (v) =>
-                                (v ?? '').trim().isEmpty ? 'Name required' : null,
+                                (v ?? '').trim().isEmpty ? 'Full name is required' : null,
                           )
                         : _buildReadOnlyField('Full Name', _userData['fullName'] ?? ''),
                   ),
@@ -469,7 +511,10 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
                             controller: phoneCtrl,
                             decoration: InputDecoration(
                               labelText: 'Phone Number',
-                              border: OutlineInputBorder(),
+                              hintText: 'Enter your phone number',
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
                               filled: true,
                               fillColor: cardColor,
                               prefixIcon: Icon(Icons.phone, color: primaryColor),
@@ -477,7 +522,7 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
                             keyboardType: TextInputType.phone,
                             validator: (v) => (v != null && v.length >= 9)
                                 ? null
-                                : 'Enter valid phone number',
+                                : 'Please enter a valid phone number',
                           )
                         : _buildReadOnlyField('Phone Number', _userData['phoneNumber'] ?? ''),
                   ),
@@ -524,6 +569,7 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
                     ),
                   ),
                   
+                  // Save Button (only when editing)
                   if (_editing) ...[
                     const SizedBox(height: 32),
                     Padding(
@@ -534,17 +580,25 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
                           onPressed: _saving ? null : _saveProfile,
                           style: ElevatedButton.styleFrom(
                             backgroundColor: primaryColor,
+                            foregroundColor: Colors.white,
                             padding: const EdgeInsets.symmetric(vertical: 16),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(12),
                             ),
+                            elevation: 2,
                           ),
                           child: _saving
-                              ? const CircularProgressIndicator(color: Colors.white)
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                )
                               : const Text(
                                   'Save Changes',
                                   style: TextStyle(
-                                    color: Colors.white,
                                     fontWeight: FontWeight.bold,
                                     fontSize: 16,
                                   ),

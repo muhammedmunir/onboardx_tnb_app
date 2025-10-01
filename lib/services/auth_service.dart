@@ -7,28 +7,21 @@ class AuthService {
   final SupabaseService _supabaseService = SupabaseService();
 
   Future<fb.User?> signInWithEmail(String email, String password) async {
-  try {
-    fb.UserCredential userCredential = await _firebaseAuth.signInWithEmailAndPassword(
-      email: email.trim(),
-      password: password,
-    );
+    try {
+      fb.UserCredential userCredential = await _firebaseAuth.signInWithEmailAndPassword(
+        email: email,
+        password: password,
+      );
 
-    // Sync user data to Supabase hanya jika user berhasil login
-    if (userCredential.user != null) {
-      try {
-        await _syncUserToSupabase(userCredential.user!);
-      } catch (e) {
-        print("Error syncing to Supabase: $e");
-        // Jangan return null hanya karena sync gagal, user tetap bisa login
-      }
+      // Sync user data to Supabase
+      await _syncUserToSupabase(userCredential.user!);
+
+      return userCredential.user;
+    } catch (e) {
+      print("Error signing in: $e");
+      return null;
     }
-
-    return userCredential.user;
-  } catch (e) {
-    print("Error signing in: $e");
-    return null;
   }
-}
 
   Future<fb.User?> registerWithEmail(String email, String password) async {
     try {
@@ -51,7 +44,7 @@ class AuthService {
     final userData = {
       'uid': firebaseUser.uid,
       'email': firebaseUser.email,
-      'createdat': DateTime.now().toIso8601String(),
+      'created_at': DateTime.now().toIso8601String(),
     };
 
     await _supabaseService.client.from('users').upsert(userData);
