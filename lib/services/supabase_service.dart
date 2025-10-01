@@ -145,9 +145,12 @@ class SupabaseService {
   // Check if file exists in storage
   Future<bool> fileExists(String bucket, String path) async {
     try {
-      final response = await client.storage.from(bucket).list(path: path);
-      return response.isNotEmpty;
+      // Try to download the file (most reliable way to check existence)
+      await client.storage.from(bucket).download(path);
+      return true;
     } catch (e) {
+      // If any error occurs, file likely doesn't exist
+      print('File does not exist: $path, error: $e');
       return false;
     }
   }
@@ -270,14 +273,20 @@ class SupabaseService {
       // Delete old image if exists and is different from new one
       if (oldImagePath != null && 
           oldImagePath.isNotEmpty && 
-          oldImagePath != path &&
-          !oldImagePath.contains('/default/')) { // Don't delete default images
+          oldImagePath != path) {
         await _deleteOldProfileImage(oldImagePath);
       }
       
       return path;
     } catch (e) {
       print('❌ Failed to upload profile image: $e');
+      
+      // Cleanup: If new image was uploaded but something else failed,
+      // delete the new image to avoid orphaned files
+      if (oldImagePath == null || oldImagePath.isEmpty) {
+        print('🔄 No old image to restore, keeping new upload');
+      }
+      
       throw Exception('Failed to upload profile image: ${e.toString()}');
     }
   }
@@ -287,13 +296,19 @@ class SupabaseService {
     try {
       print('🗑 Attempting to delete old profile image: $oldImagePath');
       
+      // Remove any bucket prefix that might be in the path
+      String cleanPath = oldImagePath;
+      if (cleanPath.startsWith('profile-images/')) {
+        cleanPath = cleanPath.replaceFirst('profile-images/', '');
+      }
+      
       // Check if file exists before deleting
-      final exists = await fileExists('profile-images', oldImagePath);
+      final exists = await fileExists('profile-images', cleanPath);
       if (exists) {
-        await deleteFile('profile-images', oldImagePath);
-        print('✅ Old profile image deleted successfully: $oldImagePath');
+        await deleteFile('profile-images', cleanPath);
+        print('✅ Old profile image deleted successfully: $cleanPath');
       } else {
-        print('ℹ Old profile image not found, skipping deletion: $oldImagePath');
+        print('ℹ Old profile image not found, skipping deletion: $cleanPath');
       }
     } catch (e) {
       // Log error but don't throw - we don't want to fail the whole operation
