@@ -1,6 +1,4 @@
-// learning_hub_create_screen.dart
 import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:file_picker/file_picker.dart';
@@ -11,27 +9,27 @@ class Lesson {
   String title;
   String description;
   String contentType; // 'Document' or 'Video'
-  // contentFile will hold the local file selected (not uploaded yet)
-  File? contentFile;
-  // contentPath will hold the storage path saved to DB (e.g. "documents/...")
-  String? contentPath;
+  String contentUrl; // public URL stored in DB
+  String? contentFileName; // for UI display
+  String? contentStoragePath; // path in bucket (optional)
 
   Lesson({
     required this.title,
     required this.description,
     required this.contentType,
-    this.contentFile,
-    this.contentPath,
+    required this.contentUrl,
+    this.contentFileName,
+    this.contentStoragePath,
   });
 
-  Map<String, dynamic> toMapForDb(String learnId) {
+  Map<String, dynamic> toMap() {
     return {
-      'learnid': learnId,
       'title': title,
       'description': description,
-      'contenttype': contentType,
-      'contentfile': contentPath ?? '',
-      'file': contentPath ?? '',
+      'contentType': contentType,
+      'contentUrl': contentUrl,
+      'contentFileName': contentFileName,
+      'contentStoragePath': contentStoragePath,
     };
   }
 }
@@ -47,21 +45,20 @@ class _LearningHubCreateScreenState extends State<LearningHubCreateScreen> {
   final _formKey = GlobalKey<FormState>();
   final TextEditingController _titleController = TextEditingController();
   final TextEditingController _descriptionController = TextEditingController();
+  final TextEditingController _coverImageUrlController = TextEditingController();
 
-  File? _coverImageFile;
-  String? _coverImagePath; // path in supabase storage (saved to DB)
+  final SupabaseService _supabase = SupabaseService();
+  final FirebaseAuth _auth = FirebaseAuth.instance;
 
   List<Lesson> _lessons = [];
   final List<String> _contentTypes = ['Document', 'Video'];
   bool _isLoading = false;
 
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  final SupabaseService _supabaseService = SupabaseService();
-
   @override
   void dispose() {
     _titleController.dispose();
     _descriptionController.dispose();
+    _coverImageUrlController.dispose();
     super.dispose();
   }
 
@@ -71,6 +68,7 @@ class _LearningHubCreateScreenState extends State<LearningHubCreateScreen> {
         title: '',
         description: '',
         contentType: 'Document',
+        contentUrl: '',
       ));
     });
   }
@@ -81,98 +79,151 @@ class _LearningHubCreateScreenState extends State<LearningHubCreateScreen> {
     });
   }
 
-  Future<void> _pickCoverImage() async {
+  // PICK & UPLOAD COVER IMAGE
+  Future<void> _pickAndUploadCoverImage() async {
     try {
-      final allowed = SupabaseService.supportedImageFormats;
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: allowed,
-        withData: false,
-      );
-      if (result == null) return;
-      final pickedPath = result.files.single.path;
-      if (pickedPath == null) return;
-      setState(() {
-        _coverImageFile = File(pickedPath);
-      });
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to pick cover image: $e')),
-      );
-    }
-  }
-
-  Future<void> _pickLessonFile(int index) async {
-    try {
-      final lesson = _lessons[index];
-      List<String> allowed;
-      FileType type = FileType.custom;
-
-      if (lesson.contentType == 'Video') {
-        allowed = ['mp4', 'mov', 'mkv', 'webm', 'avi'];
-      } else {
-        // Document
-        allowed = ['pdf', 'doc', 'docx', 'ppt', 'pptx', 'txt', 'csv', 'xlsx'];
+      final user = _auth.currentUser;
+      if (user == null) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please sign in first')));
+        return;
       }
 
       final result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
-        allowedExtensions: allowed,
+        allowedExtensions: SupabaseService.supportedImageFormats,
+        allowMultiple: false,
         withData: false,
       );
 
-      if (result == null) return;
+      if (result == null || result.files.isEmpty) return;
+
       final pickedPath = result.files.single.path;
       if (pickedPath == null) return;
 
-      setState(() {
-        _lessons[index].contentFile = File(pickedPath);
-      });
+      final file = File(pickedPath);
+      final fileSize = await file.length();
+      if (fileSize > SupabaseService.maxFileSize) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Cover image too large. Max ${SupabaseService.maxFileSize ~/ (1024 * 1024)}MB')),
+        );
+        return;
+      }
+
+      final ext = p.extension(file.path).replaceFirst('.', '');
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      final storagePath = 'covers/${user.uid}/cover_$ts.$ext';
+
+      setState(() => _isLoading = true);
+
+      // upload to bucket learning-content (overwrite allowed)
+      final uploaded = await _supabase.uploadFileWithOverwrite('learning-content', storagePath, file);
+      // uploaded should be storage path; get public url
+      final publicUrl = _supabase.getPublicUrl('learning-content', uploaded);
+
+      // set controller
+      _coverImageUrlController.text = publicUrl;
+
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Cover image uploaded')));
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to pick file for lesson ${index + 1}: $e')),
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to upload cover image: $e')));
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  // PICK & UPLOAD LESSON FILE (document/video depending on lesson.contentType)
+  Future<void> _pickAndUploadLessonFile(int index) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please sign in first')));
+        return;
+      }
+
+      final lesson = _lessons[index];
+
+      FileType pickType = FileType.any;
+      List<String>? allowedExt;
+      String bucket = 'documents';
+
+      if (lesson.contentType == 'Video') {
+        // common video extensions
+        allowedExt = ['mp4', 'mov', 'mkv', 'webm', 'avi'];
+        bucket = 'videos';
+        pickType = FileType.custom;
+      } else {
+        // documents
+        allowedExt = ['pdf', 'doc', 'docx', 'ppt', 'pptx', 'xlsx', 'txt'];
+        bucket = 'documents';
+        pickType = FileType.custom;
+      }
+
+      final result = await FilePicker.platform.pickFiles(
+        type: pickType,
+        allowedExtensions: allowedExt,
+        allowMultiple: false,
+        withData: false,
       );
+
+      if (result == null || result.files.isEmpty) return;
+      final pickedPath = result.files.single.path;
+      if (pickedPath == null) return;
+      final file = File(pickedPath);
+      final fileSize = await file.length();
+      if (fileSize > SupabaseService.maxFileSize) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('File too large. Max ${SupabaseService.maxFileSize ~/ (1024 * 1024)}MB')),
+        );
+        return;
+      }
+
+      final ext = p.extension(file.path).replaceFirst('.', '');
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      final storagePath = '${bucket}/${user.uid}/${p.basenameWithoutExtension(file.path)}_$ts.$ext';
+
+      setState(() => _isLoading = true);
+
+      final uploaded = await _supabase.uploadFileWithOverwrite(bucket, storagePath, file);
+      final publicUrl = _supabase.getPublicUrl(bucket, uploaded);
+
+      setState(() {
+        _lessons[index].contentUrl = publicUrl;
+        _lessons[index].contentFileName = p.basename(file.path);
+        _lessons[index].contentStoragePath = uploaded;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Lesson file uploaded')));
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to upload lesson file: $e')));
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
   Future<void> _submitForm() async {
     if (!_formKey.currentState!.validate()) return;
-
-    if (_coverImageFile == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please choose a cover image')),
-      );
+    if (_coverImageUrlController.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please provide a cover image (upload)')));
       return;
     }
-
     if (_lessons.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please add at least one lesson')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please add at least one lesson')));
       return;
     }
-
-    for (int i = 0; i < _lessons.length; i++) {
-      final l = _lessons[i];
-      if (l.title.trim().isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Lesson ${i + 1} must have a title')),
-        );
+    for (var lesson in _lessons) {
+      if (lesson.title.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('All lessons must have a title')));
         return;
       }
-      if (l.contentFile == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Lesson ${i + 1} must have a file selected')),
-        );
+      if (lesson.contentUrl.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('All lessons must have a content file (upload)')));
         return;
       }
     }
 
     final user = _auth.currentUser;
     if (user == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('You must be signed in to create a learning')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('You must be signed in to create a learning')));
       return;
     }
 
@@ -181,168 +232,30 @@ class _LearningHubCreateScreenState extends State<LearningHubCreateScreen> {
     });
 
     try {
-      // 1) Upload cover image to bucket 'learning-content'
-      final coverExt = p.extension(_coverImageFile!.path).replaceFirst('.', '');
-      final coverFileName = 'cover_${DateTime.now().millisecondsSinceEpoch}$coverExt';
-      final coverPath = 'coverimages/${user.uid}/${DateTime.now().millisecondsSinceEpoch}${p.extension(_coverImageFile!.path)}';
-      // uploadFileWithOverwrite returns path (as implemented in SupabaseService)
-      final uploadedCoverResponse = await _supabaseService.uploadFileWithOverwrite(
-        'learning-content',
-        coverPath,
-        _coverImageFile!,
-      );
-      // store path (we expect service returns stored path or something sensible)
-      _coverImagePath = coverPath;
+      final lessonsData = _lessons.map((l) => l.toMap()).toList();
 
-      // 2) Insert learns row
-      final learnInsert = {
+      // Insert to Supabase Postgres table 'learnings'
+      final payload = {
         'title': _titleController.text.trim(),
         'description': _descriptionController.text.trim(),
-        'coverimage': _coverImagePath,
-        'totallessons': _lessons.length,
-        'createdat': DateTime.now().toUtc().toIso8601String(),
-        // you can add created_by if schema supports it
+        'cover_image_url': _coverImageUrlController.text.trim(),
+        'cover_image_path': null, // optional - could store storage path if you prefer
+        'lessons': lessonsData, // jsonb
+        'total_lessons': lessonsData.length,
+        'created_by': user.uid,
       };
 
-      final supabaseClient = _supabaseService.client;
-      final insertedLearn = await supabaseClient
-          .from('learns')
-          .insert(learnInsert)
-          .select()
-          .maybeSingle();
+      final response = await _supabase.client.from('learnings').insert(payload).select().maybeSingle();
 
-      if (insertedLearn == null) {
-        throw Exception('Failed to insert learning (no row returned)');
-      }
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Learning created successfully!')));
 
-      final learnId = insertedLearn['uid'] as String?;
-
-      if (learnId == null) {
-        throw Exception('Failed to get learn id after insert');
-      }
-
-      // 3) For each lesson: upload file to appropriate bucket and insert lesson row
-      for (int i = 0; i < _lessons.length; i++) {
-        final lesson = _lessons[i];
-        final localFile = lesson.contentFile!;
-        final ext = p.extension(localFile.path);
-        final timestamp = DateTime.now().millisecondsSinceEpoch;
-        final safeFileName = '${timestamp}_${p.basename(localFile.path)}';
-        final bucket = lesson.contentType == 'Video' ? 'videos' : 'documents';
-        final storagePath = '${lesson.contentType.toLowerCase()}/${learnId}/$safeFileName';
-
-        await _supabaseService.uploadFileWithOverwrite(bucket, storagePath, localFile);
-
-        // Save the storage path into lesson object
-        lesson.contentPath = storagePath;
-
-        // Insert lesson row
-        final lessonRow = {
-          'learnid': learnId,
-          'title': lesson.title.trim(),
-          'description': lesson.description.trim(),
-          'contenttype': lesson.contentType,
-          'contentfile': lesson.contentPath ?? '',
-          'file': lesson.contentPath ?? '',
-          'createdat': DateTime.now().toUtc().toIso8601String(),
-        };
-
-        final insertedLesson = await supabaseClient.from('lessons').insert(lessonRow).select().maybeSingle();
-        if (insertedLesson == null) {
-          throw Exception('Failed to insert lesson ${i + 1}');
-        }
-      }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Learning created successfully!')),
-      );
-
-      // Return to previous screen and optionally pass created learn id
-      if (mounted) Navigator.of(context).pop({'id': insertedLearn['uid']});
+      // return to previous screen with id if available (response['id'])
+      Navigator.of(context).pop({'id': response != null ? response['id'] : null});
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error creating learning: $e')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error creating learning: $e')));
     } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
+      if (mounted) setState(() => _isLoading = false);
     }
-  }
-
-  Widget _buildCoverPicker(Color textColor, Color hintColor, Color fieldFillColor) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('Cover Image', style: TextStyle(color: textColor, fontWeight: FontWeight.w600)),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            if (_coverImageFile != null)
-              Container(
-                width: 80,
-                height: 80,
-                clipBehavior: Clip.hardEdge,
-                decoration: BoxDecoration(borderRadius: BorderRadius.circular(8)),
-                child: Image.file(_coverImageFile!, fit: BoxFit.cover),
-              )
-            else
-              Container(
-                width: 80,
-                height: 80,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(8),
-                  color: fieldFillColor,
-                ),
-                child: Icon(Icons.image, color: hintColor),
-              ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    _coverImageFile != null ? p.basename(_coverImageFile!.path) : 'No image selected',
-                    style: TextStyle(color: textColor),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      ElevatedButton.icon(
-                        onPressed: _isLoading ? null : _pickCoverImage,
-                        icon: const Icon(Icons.upload_file),
-                        label: const Text('Choose Image'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color.fromRGBO(224, 124, 124, 1),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      if (_coverImageFile != null)
-                        TextButton(
-                          onPressed: _isLoading
-                              ? null
-                              : () {
-                                  setState(() {
-                                    _coverImageFile = null;
-                                    _coverImagePath = null;
-                                  });
-                                },
-                          child: Text('Remove', style: TextStyle(color: hintColor)),
-                        ),
-                    ],
-                  ),
-                ],
-              ),
-            )
-          ],
-        ),
-      ],
-    );
   }
 
   @override
@@ -362,7 +275,6 @@ class _LearningHubCreateScreenState extends State<LearningHubCreateScreen> {
         elevation: 0,
         backgroundColor: Colors.transparent,
         foregroundColor: textColor,
-        automaticallyImplyLeading: false,
         leading: Center(
           child: InkWell(
             borderRadius: BorderRadius.circular(8),
@@ -395,8 +307,42 @@ class _LearningHubCreateScreenState extends State<LearningHubCreateScreen> {
               child: Form(
                 key: _formKey,
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  _buildCoverPicker(textColor, hintColor, fieldFillColor),
-                  const SizedBox(height: 20),
+                  // Cover Image area (upload)
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextFormField(
+                          controller: _coverImageUrlController,
+                          style: TextStyle(color: textColor),
+                          decoration: InputDecoration(
+                            labelText: 'Cover Image URL (auto after upload)',
+                            labelStyle: TextStyle(color: hintColor),
+                            hintText: 'Upload a cover image to generate URL',
+                            hintStyle: TextStyle(color: hintColor),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12.0),
+                              borderSide: BorderSide(color: isDarkMode ? Colors.grey[700]! : Colors.grey[300]!),
+                            ),
+                            filled: true,
+                            fillColor: fieldFillColor,
+                          ),
+                          validator: (value) {
+                            if (value == null || value.isEmpty) {
+                              return 'Please provide a cover image URL';
+                            }
+                            return null;
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      ElevatedButton(
+                        onPressed: _isLoading ? null : _pickAndUploadCoverImage,
+                        style: ElevatedButton.styleFrom(backgroundColor: const Color.fromRGBO(224, 124, 124, 1)),
+                        child: const Text('Upload'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20.0),
 
                   // Title Field
                   TextFormField(
@@ -405,22 +351,16 @@ class _LearningHubCreateScreenState extends State<LearningHubCreateScreen> {
                     decoration: InputDecoration(
                       labelText: 'Course Title',
                       labelStyle: TextStyle(color: hintColor),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12.0),
-                        borderSide: BorderSide(color: isDarkMode ? Colors.grey[700]! : Colors.grey[300]!),
-                      ),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12.0), borderSide: BorderSide(color: isDarkMode ? Colors.grey[700]! : Colors.grey[300]!)),
                       filled: true,
                       fillColor: fieldFillColor,
                     ),
                     validator: (value) {
-                      if (value == null || value.isEmpty) {
-                        return 'Please enter a course title';
-                      }
+                      if (value == null || value.isEmpty) return 'Please enter a course title';
                       return null;
                     },
                   ),
-
-                  const SizedBox(height: 20),
+                  const SizedBox(height: 20.0),
 
                   // Description Field
                   TextFormField(
@@ -430,30 +370,23 @@ class _LearningHubCreateScreenState extends State<LearningHubCreateScreen> {
                     decoration: InputDecoration(
                       labelText: 'Course Description',
                       labelStyle: TextStyle(color: hintColor),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12.0),
-                        borderSide: BorderSide(color: isDarkMode ? Colors.grey[700]! : Colors.grey[300]!),
-                      ),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12.0), borderSide: BorderSide(color: isDarkMode ? Colors.grey[700]! : Colors.grey[300]!)),
                       filled: true,
                       fillColor: fieldFillColor,
                     ),
                     validator: (value) {
-                      if (value == null || value.isEmpty) {
-                        return 'Please enter a course description';
-                      }
+                      if (value == null || value.isEmpty) return 'Please enter a course description';
                       return null;
                     },
                   ),
+                  const SizedBox(height: 20.0),
 
-                  const SizedBox(height: 20),
-
-                  // Lessons Header
+                  // Lessons header
                   Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                     Text('Lessons', style: TextStyle(fontSize: 20.0, fontWeight: FontWeight.bold, color: textColor)),
                     IconButton(onPressed: _addNewLesson, icon: Icon(Icons.add, color: textColor), tooltip: 'Add Lesson'),
                   ]),
-
-                  const SizedBox(height: 10),
+                  const SizedBox(height: 10.0),
 
                   if (_lessons.isEmpty)
                     Center(child: Text('No lessons added yet. Click + to add a lesson.', style: TextStyle(color: hintColor)))
@@ -461,7 +394,6 @@ class _LearningHubCreateScreenState extends State<LearningHubCreateScreen> {
                     ..._lessons.asMap().entries.map((entry) {
                       final index = entry.key;
                       final lesson = entry.value;
-
                       return Card(
                         margin: const EdgeInsets.only(bottom: 16.0),
                         color: cardColor,
@@ -472,27 +404,24 @@ class _LearningHubCreateScreenState extends State<LearningHubCreateScreen> {
                               Text('Lesson ${index + 1}', style: TextStyle(fontSize: 18.0, fontWeight: FontWeight.bold, color: textColor)),
                               IconButton(onPressed: () => _removeLesson(index), icon: const Icon(Icons.delete), color: Colors.red),
                             ]),
-                            const SizedBox(height: 10),
+                            const SizedBox(height: 10.0),
+
+                            // Lesson Title
                             TextFormField(
                               initialValue: lesson.title,
                               style: TextStyle(color: textColor),
                               decoration: InputDecoration(
                                 labelText: 'Lesson Title',
                                 labelStyle: TextStyle(color: hintColor),
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(8.0),
-                                  borderSide: BorderSide(color: isDarkMode ? Colors.grey[700]! : Colors.grey[300]!),
-                                ),
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8.0), borderSide: BorderSide(color: isDarkMode ? Colors.grey[700]! : Colors.grey[300]!)),
                                 filled: true,
                                 fillColor: fieldFillColor,
                               ),
-                              onChanged: (value) {
-                                setState(() {
-                                  _lessons[index].title = value;
-                                });
-                              },
+                              onChanged: (value) => setState(() => _lessons[index].title = value),
                             ),
-                            const SizedBox(height: 10),
+                            const SizedBox(height: 10.0),
+
+                            // Lesson Description
                             TextFormField(
                               initialValue: lesson.description,
                               style: TextStyle(color: textColor),
@@ -500,20 +429,15 @@ class _LearningHubCreateScreenState extends State<LearningHubCreateScreen> {
                               decoration: InputDecoration(
                                 labelText: 'Lesson Description',
                                 labelStyle: TextStyle(color: hintColor),
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(8.0),
-                                  borderSide: BorderSide(color: isDarkMode ? Colors.grey[700]! : Colors.grey[300]!),
-                                ),
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8.0), borderSide: BorderSide(color: isDarkMode ? Colors.grey[700]! : Colors.grey[300]!)),
                                 filled: true,
                                 fillColor: fieldFillColor,
                               ),
-                              onChanged: (value) {
-                                setState(() {
-                                  _lessons[index].description = value;
-                                });
-                              },
+                              onChanged: (value) => setState(() => _lessons[index].description = value),
                             ),
-                            const SizedBox(height: 10),
+                            const SizedBox(height: 10.0),
+
+                            // Content Type dropdown
                             DropdownButtonFormField<String>(
                               value: lesson.contentType,
                               dropdownColor: isDarkMode ? Colors.grey[800] : Colors.white,
@@ -521,60 +445,46 @@ class _LearningHubCreateScreenState extends State<LearningHubCreateScreen> {
                               decoration: InputDecoration(
                                 labelText: 'Content Type',
                                 labelStyle: TextStyle(color: hintColor),
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(8.0),
-                                  borderSide: BorderSide(color: isDarkMode ? Colors.grey[700]! : Colors.grey[300]!),
-                                ),
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8.0), borderSide: BorderSide(color: isDarkMode ? Colors.grey[700]! : Colors.grey[300]!)),
                                 filled: true,
                                 fillColor: fieldFillColor,
                               ),
-                              items: _contentTypes.map((String type) {
-                                return DropdownMenuItem<String>(value: type, child: Text(type, style: TextStyle(color: textColor)));
-                              }).toList(),
-                              onChanged: (String? newValue) {
-                                setState(() {
-                                  _lessons[index].contentType = newValue!;
-                                  _lessons[index].contentFile = null; // reset file when type changes
-                                });
-                              },
+                              items: _contentTypes.map((String type) => DropdownMenuItem<String>(value: type, child: Text(type, style: TextStyle(color: textColor)))).toList(),
+                              onChanged: (String? newValue) => setState(() => _lessons[index].contentType = newValue!),
                             ),
-                            const SizedBox(height: 10),
-                            // File picker row
+                            const SizedBox(height: 10.0),
+
+                            // Content URL + Upload Button
                             Row(children: [
                               Expanded(
-                                child: Text(
-                                  lesson.contentFile != null ? p.basename(lesson.contentFile!.path) : (lesson.contentPath ?? 'No file selected'),
+                                child: TextFormField(
+                                  initialValue: lesson.contentUrl,
                                   style: TextStyle(color: textColor),
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
+                                  readOnly: true,
+                                  decoration: InputDecoration(
+                                    labelText: 'Content URL (auto after upload)',
+                                    labelStyle: TextStyle(color: hintColor),
+                                    hintText: lesson.contentFileName ?? 'Upload a file',
+                                    hintStyle: TextStyle(color: hintColor),
+                                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8.0), borderSide: BorderSide(color: isDarkMode ? Colors.grey[700]! : Colors.grey[300]!)),
+                                    filled: true,
+                                    fillColor: fieldFillColor,
+                                  ),
                                 ),
                               ),
-                              const SizedBox(width: 8),
-                              ElevatedButton.icon(
-                                onPressed: () => _pickLessonFile(index),
-                                icon: const Icon(Icons.upload_file),
-                                label: const Text('Choose File'),
+                              const SizedBox(width: 10),
+                              ElevatedButton(
+                                onPressed: _isLoading ? null : () => _pickAndUploadLessonFile(index),
                                 style: ElevatedButton.styleFrom(backgroundColor: const Color.fromRGBO(224, 124, 124, 1)),
+                                child: const Text('Upload'),
                               ),
-                              const SizedBox(width: 8),
-                              if (lesson.contentFile != null || (lesson.contentPath != null && lesson.contentPath!.isNotEmpty))
-                                TextButton(
-                                  onPressed: () {
-                                    setState(() {
-                                      lesson.contentFile = null;
-                                      lesson.contentPath = null;
-                                    });
-                                  },
-                                  child: Text('Remove', style: TextStyle(color: hintColor)),
-                                )
                             ]),
                           ]),
                         ),
                       );
                     }).toList(),
 
-                  const SizedBox(height: 30),
-
+                  const SizedBox(height: 30.0),
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton(
