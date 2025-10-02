@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:onboardx_tnb_app/screens/learninghub/document_viewer_screen.dart';
+import 'package:onboardx_tnb_app/screens/learninghub/video_player_screen.dart';
 import 'package:onboardx_tnb_app/services/supabase_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -102,25 +104,76 @@ class _LearningHubDetailScreenState extends State<LearningHubDetailScreen> {
   }
 
   Future<void> _openContent(BuildContext context, String contentPath, String contentType) async {
-    try {
-      // Determine the correct bucket based on content type
-      final bucket = contentType == 'Video' ? 'videos' : 'documents';
-      
-      // Get public URL from Supabase storage
-      final publicUrl = _supabaseService.getPublicUrl(bucket, contentPath);
-      
+  try {
+    // Determine the correct bucket based on content type
+    final bucket = contentType.toLowerCase().contains('video') ? 'videos' : 'documents';
+    
+    // Get public URL from Supabase storage
+    final publicUrl = _supabaseService.getPublicUrl(bucket, contentPath);
+    
+    final lowerContentType = contentType.toLowerCase();
+
+    if (lowerContentType.contains('video') || 
+        contentPath.toLowerCase().endsWith('.mp4') ||
+        contentPath.toLowerCase().endsWith('.mov') ||
+        contentPath.toLowerCase().endsWith('.avi') ||
+        contentPath.toLowerCase().endsWith('.mkv')) {
+      // Navigate to video player for video content
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => VideoPlayerScreen(
+            videoUrl: publicUrl,
+            videoTitle: 'Lesson Video',
+          ),
+        ),
+      );
+    } else if (lowerContentType.contains('pdf') || 
+               contentPath.toLowerCase().endsWith('.pdf')) {
+      // Navigate to PDF viewer for PDF documents
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => DocumentViewerScreen(
+            documentUrl: publicUrl,
+            documentTitle: 'Lesson Document',
+            contentType: contentType,
+          ),
+        ),
+      );
+    } else if (lowerContentType.contains('document') ||
+               contentPath.toLowerCase().endsWith('.doc') ||
+               contentPath.toLowerCase().endsWith('.docx') ||
+               contentPath.toLowerCase().endsWith('.txt') ||
+               contentPath.toLowerCase().endsWith('.ppt') ||
+               contentPath.toLowerCase().endsWith('.pptx')) {
+      // Navigate to document viewer for other documents
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => DocumentViewerScreen(
+            documentUrl: publicUrl,
+            documentTitle: 'Lesson Document',
+            contentType: contentType,
+          ),
+        ),
+      );
+    } else {
+      // For unknown types, try to launch externally
       final uri = Uri.parse(publicUrl);
       if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Could not open the content')),
         );
       }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error opening content: $e')),
-      );
     }
+  } catch (e) {
+    print('Error opening content: $e');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Error opening content: $e')),
+    );
   }
+}
 
   Future<void> _toggleCompleted(int idx, bool currentlyCompleted) async {
   final user = _auth.currentUser;

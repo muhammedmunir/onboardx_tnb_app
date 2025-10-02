@@ -1,33 +1,46 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:onboardx_tnb_app/services/supabase_service.dart';
+
 import 'learning_hub_detail_screen.dart';
 
 class LearningHubInprogressScreen extends StatefulWidget {
-  final List<Map<String, dynamic>> courses;
-
-  const LearningHubInprogressScreen({
-    super.key,
-    required this.courses,
-  });
+  const LearningHubInprogressScreen({super.key});
 
   @override
   State<LearningHubInprogressScreen> createState() => _LearningHubInprogressScreenState();
 }
 
-class _LearningHubInprogressScreenState extends State<LearningHubInprogressScreen> {
+class _LearningHubInprogressScreenState extends State<LearningHubInprogressScreen> with WidgetsBindingObserver {
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
+  List<Map<String, dynamic>> _inProgressCourses = [];
+  bool _isLoading = true;
+
+  final SupabaseService _supabaseService = SupabaseService();
+  final FirebaseAuth _auth = FirebaseAuth.instance;
 
   @override
   void initState() {
     super.initState();
     _searchController.addListener(_onSearchChanged);
+    WidgetsBinding.instance.addObserver(this);
+    _loadLearnings();
   }
 
   @override
   void dispose() {
     _searchController.removeListener(_onSearchChanged);
     _searchController.dispose();
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _loadLearnings();
+    }
   }
 
   void _onSearchChanged() {
@@ -36,19 +49,90 @@ class _LearningHubInprogressScreenState extends State<LearningHubInprogressScree
     });
   }
 
-  List<Map<String, dynamic>> _getFilteredCourses() {
-    // Filter hanya course yang in progress (progress > 0 dan < 1)
-    final inProgressCourses = widget.courses.where((course) {
-      final progress = course['progress'] ?? 0.0;
-      return progress > 0.0 && progress < 1.0;
-    }).toList();
+  Future<void> _loadLearnings() async {
+    setState(() {
+      _isLoading = true;
+    });
 
+    try {
+      final user = _auth.currentUser;
+      List<Map<String, dynamic>> learnings = [];
+
+      if (user != null) {
+        // Load learnings with user progress
+        learnings = await _supabaseService.getLearningsWithProgress(user.uid);
+      } else {
+        // Load all learnings without progress
+        final response = await _supabaseService.client
+            .from('learnings')
+            .select('''
+            *,
+            lessons:lessons(*)
+          ''')
+            .order('created_at', ascending: false);
+
+        learnings = List<Map<String, dynamic>>.from(response);
+      }
+
+      // Process learnings data dan filter hanya in progress
+      List<Map<String, dynamic>> processedCourses = [];
+      
+      for (final learning in learnings) {
+        final coverImagePath = learning['cover_image_path'] as String?;
+        String imageUrl = 'https://cdn-icons-png.flaticon.com/512/888/888883.png';
+        
+        if (coverImagePath != null && coverImagePath.isNotEmpty) {
+          imageUrl = _supabaseService.getPublicUrl('learning-content', coverImagePath);
+        }
+
+        double progress = 0.0;
+
+        if (user != null) {
+          // Calculate progress from learning_progress
+          final progressData = learning['progress'] as List?;
+          if (progressData != null && progressData.isNotEmpty) {
+            final progressItem = progressData.first as Map<String, dynamic>;
+            progress = (progressItem['progress_percentage'] as num?)?.toDouble() ?? 0.0;
+          }
+        }
+
+        // Hanya tambahkan course yang in progress (progress > 0 dan < 1)
+        if (progress > 0.0 && progress < 1.0) {
+          processedCourses.add({
+            'id': learning['id'],
+            'title': learning['title'] ?? 'Untitled',
+            'description': learning['description'] ?? '',
+            'imageUrl': imageUrl,
+            'progress': progress,
+            'raw': learning,
+            'total_lessons': learning['total_lessons'] ?? 0,
+          });
+        }
+      }
+
+      setState(() {
+        _inProgressCourses = processedCourses;
+        _isLoading = false;
+      });
+    } catch (e) {
+      print('Error loading learnings: $e');
+      setState(() {
+        _isLoading = false;
+      });
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error loading learnings: $e')),
+      );
+    }
+  }
+
+  List<Map<String, dynamic>> _getFilteredCourses() {
     if (_searchQuery.isEmpty) {
-      return inProgressCourses;
+      return _inProgressCourses;
     }
 
     final query = _searchQuery.trim().toLowerCase();
-    return inProgressCourses.where((course) {
+    return _inProgressCourses.where((course) {
       final title = course['title'].toString().toLowerCase();
       final description = course['description'].toString().toLowerCase();
       return title.contains(query) || description.contains(query);
@@ -71,14 +155,13 @@ class _LearningHubInprogressScreenState extends State<LearningHubInprogressScree
       backgroundColor: scaffoldBackground,
       appBar: AppBar(
         title: Text(
-          'Courses In Progress',
+          'In Progress',
           style: TextStyle(color: textColor),
         ),
         centerTitle: true,
         elevation: 0,
         backgroundColor: Colors.transparent,
         foregroundColor: appBarIconColor,
-        automaticallyImplyLeading: false,
         leading: Center(
           child: InkWell(
             borderRadius: BorderRadius.circular(8),
@@ -112,7 +195,7 @@ class _LearningHubInprogressScreenState extends State<LearningHubInprogressScree
               child: TextField(
                 controller: _searchController,
                 decoration: InputDecoration(
-                  hintText: 'Search Now...',
+                  hintText: 'Search In Progress...',
                   hintStyle: TextStyle(color: hintColor),
                   prefixIcon: Icon(Icons.search, color: hintColor),
                   border: InputBorder.none,
@@ -124,23 +207,31 @@ class _LearningHubInprogressScreenState extends State<LearningHubInprogressScree
             ),
           ),
           Expanded(
-            child: filteredCourses.isEmpty
-                ? const Center(
-                    child: Padding(
-                      padding: EdgeInsets.symmetric(vertical: 40.0),
-                      child: Text(
-                        'No courses found',
-                        style: TextStyle(fontSize: 18.0, color: Colors.grey),
-                      ),
-                    ),
-                  )
-                : SingleChildScrollView(
-                    padding: const EdgeInsets.only(left: 16.0, right: 16.0, bottom: 16.0),
-                    child: Column(
-                      children: [
-                        ...filteredCourses.map((course) => _learningItemCardFromMap(course, cardColor, textColor)),
-                      ],
-                    ),
+            child: _isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : RefreshIndicator(
+                    onRefresh: _loadLearnings,
+                    child: filteredCourses.isEmpty
+                        ? const Center(
+                            child: Padding(
+                              padding: EdgeInsets.symmetric(vertical: 40.0),
+                              child: Text(
+                                'No in progress courses found',
+                                style: TextStyle(fontSize: 18.0, color: Colors.grey),
+                              ),
+                            ),
+                          )
+                        : ListView.builder(
+                            padding: const EdgeInsets.only(left: 16.0, right: 16.0, bottom: 16.0),
+                            itemCount: filteredCourses.length,
+                            itemBuilder: (context, index) {
+                              return _learningItemCardFromMap(
+                                filteredCourses[index], 
+                                cardColor, 
+                                textColor
+                              );
+                            },
+                          ),
                   ),
           ),
         ],
@@ -170,10 +261,13 @@ class _LearningHubInprogressScreenState extends State<LearningHubInprogressScree
               totalLessons: course['total_lessons'] ?? 0,
             ),
           ),
-        );
+        ).then((_) {
+          // Reload data setelah kembali dari detail screen untuk update progress
+          _loadLearnings();
+        });
       },
       child: Container(
-        margin: const EdgeInsets.only(bottom: 8.0),
+        margin: const EdgeInsets.only(bottom: 12.0),
         padding: const EdgeInsets.all(16.0),
         decoration: BoxDecoration(
           color: cardColor,
@@ -199,13 +293,37 @@ class _LearningHubInprogressScreenState extends State<LearningHubInprogressScree
                     width: 60,
                     height: 60,
                     fit: BoxFit.cover,
-                    errorBuilder: (context, error, stackTrace) => Container(
-                      width: 60,
-                      height: 60,
-                      color: Colors.grey[100],
-                      alignment: Alignment.center,
-                      child: const Icon(Icons.description, color: Colors.grey),
-                    ),
+                    loadingBuilder: (context, child, loadingProgress) {
+                      if (loadingProgress == null) return child;
+                      return Container(
+                        width: 60,
+                        height: 60,
+                        color: Colors.grey[200],
+                        alignment: Alignment.center,
+                        child: const CircularProgressIndicator(),
+                      );
+                    },
+                    errorBuilder: (context, error, stackTrace) {
+                      return Container(
+                        width: 60,
+                        height: 60,
+                        color: Colors.grey[100],
+                        alignment: Alignment.center,
+                        child: const Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.broken_image, color: Colors.grey, size: 24),
+                            Text(
+                              'No Image',
+                              style: TextStyle(
+                                color: Colors.grey,
+                                fontSize: 10,
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
                   ),
                 ),
                 const SizedBox(width: 16.0),
@@ -228,6 +346,8 @@ class _LearningHubInprogressScreenState extends State<LearningHubInprogressScree
                           color: Colors.grey[600], 
                           fontSize: 14.0
                         ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ],
                   ),
@@ -243,9 +363,7 @@ class _LearningHubInprogressScreenState extends State<LearningHubInprogressScree
                     child: LinearProgressIndicator(
                       value: progress.clamp(0.0, 1.0),
                       backgroundColor: Colors.grey[200],
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        progress >= 1.0 ? Colors.green : Colors.blue,
-                      ),
+                      valueColor: const AlwaysStoppedAnimation<Color>(Colors.blue),
                       minHeight: 10.0,
                     ),
                   ),
@@ -253,9 +371,9 @@ class _LearningHubInprogressScreenState extends State<LearningHubInprogressScree
                 const SizedBox(width: 12.0),
                 Text(
                   '${(progress * 100).toInt()}%',
-                  style: TextStyle(
+                  style: const TextStyle(
                     fontWeight: FontWeight.bold,
-                    color: progress >= 1.0 ? Colors.green : progress > 0.0 ? Colors.blue : Colors.grey,
+                    color: Colors.blue,
                     fontSize: 14.0,
                   ),
                 ),
