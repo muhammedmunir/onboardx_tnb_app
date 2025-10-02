@@ -108,17 +108,21 @@ class _LearningHubDetailScreenState extends State<LearningHubDetailScreen> {
     // Determine the correct bucket based on content type
     final bucket = contentType.toLowerCase().contains('video') ? 'videos' : 'documents';
     
+    // PERBAIKAN: Log untuk debug
+    print('📂 Opening content:');
+    print('  - Bucket: $bucket');
+    print('  - Content Path: $contentPath');
+    print('  - Content Type: $contentType');
+    
     // Get public URL from Supabase storage
     final publicUrl = _supabaseService.getPublicUrl(bucket, contentPath);
     
+    print('🔗 Final URL: $publicUrl');
+    
     final lowerContentType = contentType.toLowerCase();
 
-    if (lowerContentType.contains('video') || 
-        contentPath.toLowerCase().endsWith('.mp4') ||
-        contentPath.toLowerCase().endsWith('.mov') ||
-        contentPath.toLowerCase().endsWith('.avi') ||
-        contentPath.toLowerCase().endsWith('.mkv')) {
-      // Navigate to video player for video content
+    if (lowerContentType.contains('video')) {
+      // Navigate to video player
       Navigator.push(
         context,
         MaterialPageRoute(
@@ -128,47 +132,21 @@ class _LearningHubDetailScreenState extends State<LearningHubDetailScreen> {
           ),
         ),
       );
-    } else if (lowerContentType.contains('pdf') || 
-               contentPath.toLowerCase().endsWith('.pdf')) {
-      // Navigate to PDF viewer for PDF documents
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => DocumentViewerScreen(
-            documentUrl: publicUrl,
-            documentTitle: 'Lesson Document',
-            contentType: contentType,
-          ),
-        ),
-      );
-    } else if (lowerContentType.contains('document') ||
-               contentPath.toLowerCase().endsWith('.doc') ||
-               contentPath.toLowerCase().endsWith('.docx') ||
-               contentPath.toLowerCase().endsWith('.txt') ||
-               contentPath.toLowerCase().endsWith('.ppt') ||
-               contentPath.toLowerCase().endsWith('.pptx')) {
-      // Navigate to document viewer for other documents
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => DocumentViewerScreen(
-            documentUrl: publicUrl,
-            documentTitle: 'Lesson Document',
-            contentType: contentType,
-          ),
-        ),
-      );
     } else {
-      // For unknown types, try to launch externally
-      final uri = Uri.parse(publicUrl);
-      if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not open the content')),
-        );
-      }
+      // For documents, use WebView or external app
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => DocumentViewerScreen(
+            documentUrl: publicUrl,
+            documentTitle: 'Lesson Document',
+            contentType: contentType,
+          ),
+        ),
+      );
     }
   } catch (e) {
-    print('Error opening content: $e');
+    print('❌ Error opening content: $e');
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Error opening content: $e')),
     );

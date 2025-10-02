@@ -135,17 +135,26 @@ class SupabaseService {
     }
   }
 
-  // UBAH INI: getPublicUrl menjadi synchronous karena di Supabase ini synchronous operation
+  // getPublicUrl menjadi synchronous karena di Supabase ini synchronous operation
   String getPublicUrl(String bucket, String path) {
-    try {
-      final url = client.storage.from(bucket).getPublicUrl(path);
-      print('🔗 Generated public URL: $url');
-      return url;
-    } catch (e) {
-      print('❌ Failed to get public URL for bucket $bucket, path $path: $e');
-      throw Exception('Failed to get public URL: $e');
+  try {
+    // PERBAIKAN: Bersihkan path dari awalan bucket jika ada
+    String cleanPath = path;
+    if (cleanPath.startsWith('$bucket/')) {
+      cleanPath = cleanPath.substring(bucket.length + 1);
     }
+    if (cleanPath.startsWith('/')) {
+      cleanPath = cleanPath.substring(1);
+    }
+    
+    final url = client.storage.from(bucket).getPublicUrl(cleanPath);
+    print('🔗 Generated public URL for $bucket: $url');
+    return url;
+  } catch (e) {
+    print('❌ Failed to get public URL for bucket $bucket, path $path: $e');
+    throw Exception('Failed to get public URL: $e');
   }
+}
 
   // Check if file exists in storage
   Future<bool> fileExists(String bucket, String path) async {
