@@ -123,67 +123,84 @@ class _LearningHubCreateScreenState extends State<LearningHubCreateScreen> {
   }
 
   // Upload cover image ke Supabase
-  Future<String?> _uploadCoverImage() async {
-    if (_coverImageFile == null) return null;
+Future<String?> _uploadCoverImage() async {
+  if (_coverImageFile == null) return null;
 
-    try {
-      final user = _auth.currentUser;
-      if (user == null) throw Exception('User not logged in');
+  try {
+    final user = _auth.currentUser;
+    if (user == null) throw Exception('User not logged in');
 
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final fileExtension = _coverImageFile!.extension ?? 'jpg';
-      final fileName = 'cover_${user.uid}_$timestamp.$fileExtension';
-      final path = 'learning-content/covers/$fileName';
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final fileExtension = _coverImageFile!.extension ?? 'jpg';
+    final fileName = 'cover_${user.uid}_$timestamp.$fileExtension';
+    final path = 'covers/$fileName';
 
-      // Convert PlatformFile to File
-      final file = await _convertPlatformFileToFile(_coverImageFile!);
-      
-      final uploadedPath = await _supabaseService.uploadFileWithOverwrite(
-        'learning-content',
-        path,
-        file,
-      );
+    print('🖼 Uploading cover image:');
+    print('📁 Bucket: learning-content');
+    print('📁 Path: $path');
+    print('📁 File: ${_coverImageFile!.name}');
 
-      return uploadedPath;
-    } catch (e) {
-      throw Exception('Failed to upload cover image: $e');
-    }
+    // Convert PlatformFile to File
+    final file = await _convertPlatformFileToFile(_coverImageFile!);
+    
+    final uploadedPath = await _supabaseService.uploadFileWithOverwrite(
+      'learning-content',
+      path,
+      file,
+    );
+
+    print('✅ Cover image uploaded successfully: $uploadedPath');
+    
+    // Test public URL
+    final testUrl = _supabaseService.getPublicUrl('learning-content', uploadedPath);
+    print('🔗 Test Public URL: $testUrl');
+
+    return uploadedPath;
+  } catch (e) {
+    print('❌ Failed to upload cover image: $e');
+    throw Exception('Failed to upload cover image: $e');
+  }
+}
+
+// Upload lesson content ke Supabase
+Future<String> _uploadLessonContent(Lesson lesson) async {
+  if (lesson.contentFile == null || lesson.contentFile!.files.isEmpty) {
+    throw Exception('No file selected for lesson');
   }
 
-  // Upload lesson content ke Supabase
-  Future<String> _uploadLessonContent(Lesson lesson) async {
-    if (lesson.contentFile == null || lesson.contentFile!.files.isEmpty) {
-      throw Exception('No file selected for lesson');
-    }
+  try {
+    final user = _auth.currentUser;
+    if (user == null) throw Exception('User not logged in');
 
-    try {
-      final user = _auth.currentUser;
-      if (user == null) throw Exception('User not logged in');
+    final file = lesson.contentFile!.files.first;
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    
+    // Sanitize title untuk filename
+    final sanitizedTitle = lesson.title.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_');
+    final fileExtension = file.extension ?? 
+        (lesson.contentType == 'Video' ? 'mp4' : 'pdf');
+    final fileName = 'content_${user.uid}_${sanitizedTitle}_$timestamp.$fileExtension';
+    
+    // Tentukan bucket berdasarkan content type
+    final bucket = lesson.contentType == 'Video' ? 'videos' : 'documents';
+    
+    // PERBAIKAN: Hapus duplikasi bucket name di path
+    final path = fileName; // Hanya filename, tanpa folder
 
-      final file = lesson.contentFile!.files.first;
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final fileExtension = file.extension ?? 
-          (lesson.contentType == 'Video' ? 'mp4' : 'pdf');
-      final fileName = 'content_${user.uid}_${lesson.title}_$timestamp.$fileExtension';
-      
-      // Tentukan bucket berdasarkan content type
-      final bucket = lesson.contentType == 'Video' ? 'videos' : 'documents';
-      final path = '$bucket/$fileName';
+    // Convert PlatformFile to File
+    final dartFile = await _convertPlatformFileToFile(file);
+    
+    final uploadedPath = await _supabaseService.uploadFileWithOverwrite(
+      bucket,
+      path,
+      dartFile,
+    );
 
-      // Convert PlatformFile to File
-      final dartFile = await _convertPlatformFileToFile(file);
-      
-      final uploadedPath = await _supabaseService.uploadFileWithOverwrite(
-        bucket,
-        path,
-        dartFile,
-      );
-
-      return uploadedPath;
-    } catch (e) {
-      throw Exception('Failed to upload lesson content: $e');
-    }
+    return uploadedPath;
+  } catch (e) {
+    throw Exception('Failed to upload lesson content: $e');
   }
+}
 
   // Helper method untuk convert PlatformFile ke File
   Future<File> _convertPlatformFileToFile(PlatformFile platformFile) async {

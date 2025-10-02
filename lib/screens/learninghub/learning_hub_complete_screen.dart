@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-
 import 'learning_hub_detail_screen.dart';
 
 class LearningHubCompleteScreen extends StatefulWidget {
-  const LearningHubCompleteScreen({super.key});
+  final List<Map<String, dynamic>> courses;
+
+  const LearningHubCompleteScreen({
+    super.key,
+    required this.courses,
+  });
 
   @override
   State<LearningHubCompleteScreen> createState() => _LearningHubCompleteScreenState();
@@ -34,6 +37,25 @@ class _LearningHubCompleteScreenState extends State<LearningHubCompleteScreen> {
     });
   }
 
+  List<Map<String, dynamic>> _getFilteredCourses() {
+    // Filter hanya course yang complete (progress = 1.0)
+    final completeCourses = widget.courses.where((course) {
+      final progress = course['progress'] ?? 0.0;
+      return progress >= 1.0;
+    }).toList();
+
+    if (_searchQuery.isEmpty) {
+      return completeCourses;
+    }
+
+    final query = _searchQuery.trim().toLowerCase();
+    return completeCourses.where((course) {
+      final title = course['title'].toString().toLowerCase();
+      final description = course['description'].toString().toLowerCase();
+      return title.contains(query) || description.contains(query);
+    }).toList();
+  }
+
   @override
   Widget build(BuildContext context) {
     final bool isDarkMode = Theme.of(context).brightness == Brightness.dark;
@@ -44,11 +66,13 @@ class _LearningHubCompleteScreenState extends State<LearningHubCompleteScreen> {
     final Color hintColor = isDarkMode ? Colors.grey[400]! : Colors.grey[600]!;
     final Color searchBackground = isDarkMode ? Colors.grey[800]! : Colors.grey[200]!;
 
+    final filteredCourses = _getFilteredCourses();
+
     return Scaffold(
       backgroundColor: scaffoldBackground,
       appBar: AppBar(
         title: Text(
-          'Learning Hub',
+          'Completed Courses',
           style: TextStyle(color: textColor),
         ),
         centerTitle: true,
@@ -94,165 +118,33 @@ class _LearningHubCompleteScreenState extends State<LearningHubCompleteScreen> {
                   prefixIcon: Icon(Icons.search, color: hintColor),
                   border: InputBorder.none,
                   contentPadding:
-                      EdgeInsets.symmetric(horizontal: 16.0, vertical: 16.0),
+                      const EdgeInsets.symmetric(horizontal: 16.0, vertical: 16.0),
                 ),
                 style: TextStyle(color: textColor),
               ),
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16.0),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'Complete',
-                  style: TextStyle(
-                    fontSize: 20.0,
-                    fontWeight: FontWeight.bold,
-                    color: textColor,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12.0),
           Expanded(
-            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: FirebaseFirestore.instance
-                  .collection('learnings')
-                  .orderBy('createdAt', descending: true)
-                  .snapshots(),
-              builder: (context, snapshot) {
-                if (snapshot.hasError) {
-                  return Center(
-                    child: Text('Error loading learnings: ${snapshot.error}'),
-                  );
-                }
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-
-                final docs = snapshot.data?.docs ?? [];
-                List<Map<String, dynamic>> allCourses = docs.map((d) {
-                  final data = d.data();
-                  return {
-                    'id': d.id,
-                    'title': data['title'] ?? 'Untitled',
-                    'description': data['description'] ?? '',
-                    'imageUrl': data['coverImageUrl'],
-                    'raw': data,
-                  };
-                }).toList();
-
-                final query = _searchQuery.trim().toLowerCase();
-                List<Map<String, dynamic>> filtered = allCourses;
-                if (query.isNotEmpty) {
-                  filtered = allCourses.where((course) {
-                    final title = course['title'].toLowerCase();
-                    final description = course['description'].toLowerCase();
-                    return title.contains(query) || description.contains(query);
-                  }).toList();
-                }
-
-                final user = FirebaseAuth.instance.currentUser;
-                if (user == null) {
-                  return _buildEmptyState('Please sign in to view your completed courses', textColor);
-                } else {
-                  final userProgFutures = filtered.map((course) {
-                    return FirebaseFirestore.instance
-                        .collection('learnings')
-                        .doc(course['id'])
-                        .collection('userProgress')
-                        .doc(user.uid)
-                        .get();
-                  }).toList();
-
-                  return FutureBuilder<List<DocumentSnapshot<Map<String, dynamic>>>>(
-                    future: Future.wait(userProgFutures),
-                    builder: (context, progSnapshot) {
-                      if (progSnapshot.connectionState == ConnectionState.waiting) {
-                        return const Center(child: CircularProgressIndicator());
-                      }
-
-                      final progDocs = progSnapshot.data ?? [];
-                      List<Map<String, dynamic>> completeCourses = [];
-                      
-                      for (int i = 0; i < filtered.length; i++) {
-                        final course = filtered[i];
-                        final raw = course['raw'];
-                        final progDoc = progDocs[i];
-                        double displayProgress = 0.0;
-
-                        if (progDoc.exists) {
-                          final data = progDoc.data() ?? {};
-                          final completed = data['completedLessons'];
-                          int completedCount = 0;
-                          if (completed is List) completedCount = completed.length;
-                          else if (completed is int) completedCount = completed;
-
-                          int totalLessons = 0;
-                          if (raw['lessons'] is List) totalLessons = (raw['lessons'] as List).length;
-
-                          if (totalLessons > 0) {
-                            displayProgress = (completedCount / totalLessons).clamp(0.0, 1.0);
-                          }
-                        }
-
-                        // Only include courses that are complete (progress = 1.0)
-                        if (displayProgress >= 1.0) {
-                          completeCourses.add({
-                            ...course,
-                            'progress': displayProgress,
-                          });
-                        }
-                      }
-
-                      // Apply search filter to complete courses
-                      if (query.isNotEmpty) {
-                        completeCourses = completeCourses.where((course) {
-                          final title = course['title'].toLowerCase();
-                          final description = course['description'].toLowerCase();
-                          return title.contains(query) || description.contains(query);
-                        }).toList();
-                      }
-
-                      return _buildCourseList(completeCourses, cardColor, textColor);
-                    },
-                  );
-                }
-              },
-            ),
+            child: filteredCourses.isEmpty
+                ? const Center(
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(vertical: 40.0),
+                      child: Text(
+                        'No courses found',
+                        style: TextStyle(fontSize: 18.0, color: Colors.grey),
+                      ),
+                    ),
+                  )
+                : SingleChildScrollView(
+                    padding: const EdgeInsets.only(left: 16.0, right: 16.0, bottom: 16.0),
+                    child: Column(
+                      children: [
+                        ...filteredCourses.map((course) => _learningItemCardFromMap(course, cardColor, textColor)),
+                      ],
+                    ),
+                  ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildCourseList(List<Map<String, dynamic>> courses, Color cardColor, Color textColor) {
-    if (courses.isEmpty) {
-      return _buildEmptyState('No completed courses found', textColor);
-    }
-
-    return ListView.builder(
-      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-      itemCount: courses.length,
-      itemBuilder: (context, index) {
-        final course = courses[index];
-        return _learningItemCardFromMap(course, cardColor, textColor);
-      },
-    );
-  }
-
-  Widget _buildEmptyState(String message, Color textColor) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 40.0),
-        child: Text(
-          message,
-          style: TextStyle(fontSize: 18.0, color: Colors.grey),
-          textAlign: TextAlign.center,
-        ),
       ),
     );
   }
@@ -276,17 +168,25 @@ class _LearningHubCompleteScreenState extends State<LearningHubCompleteScreen> {
               courseDescription: subtitle,
               progress: progress,
               rawData: raw,
+              totalLessons: course['total_lessons'] ?? 0,
             ),
           ),
         );
       },
       child: Container(
-        margin: const EdgeInsets.only(bottom: 12.0),
+        margin: const EdgeInsets.only(bottom: 8.0),
         padding: const EdgeInsets.all(16.0),
         decoration: BoxDecoration(
           color: cardColor,
           borderRadius: BorderRadius.circular(12.0),
-          boxShadow: [BoxShadow(color: Colors.grey.withOpacity(0.3), spreadRadius: 1, blurRadius: 6, offset: const Offset(0, 3))],
+          boxShadow: [
+            BoxShadow(
+              color: Colors.grey.withOpacity(0.3), 
+              spreadRadius: 1, 
+              blurRadius: 6, 
+              offset: const Offset(0, 3)
+            ),
+          ],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -314,9 +214,22 @@ class _LearningHubCompleteScreenState extends State<LearningHubCompleteScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(title, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18.0, color: textColor)),
+                      Text(
+                        title, 
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold, 
+                          fontSize: 18.0, 
+                          color: textColor
+                        ),
+                      ),
                       const SizedBox(height: 6.0),
-                      Text(subtitle, style: TextStyle(color: Colors.grey[600], fontSize: 14.0)),
+                      Text(
+                        subtitle, 
+                        style: TextStyle(
+                          color: Colors.grey[600], 
+                          fontSize: 14.0
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -349,22 +262,6 @@ class _LearningHubCompleteScreenState extends State<LearningHubCompleteScreen> {
                 ),
               ],
             ),
-            // const SizedBox(height: 8.0),
-            // const Row(
-            //   mainAxisAlignment: MainAxisAlignment.center,
-            //   children: [
-            //     Icon(Icons.check_circle, color: Colors.green, size: 16),
-            //     SizedBox(width: 4),
-            //     Text(
-            //       'Course Completed',
-            //       style: TextStyle(
-            //         color: Colors.green,
-            //         fontWeight: FontWeight.bold,
-            //         fontSize: 12.0,
-            //       ),
-            //     ),
-            //   ],
-            // ),
           ],
         ),
       ),
