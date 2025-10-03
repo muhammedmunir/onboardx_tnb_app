@@ -79,11 +79,39 @@ void initState() {
 
   @override
   Widget build(BuildContext context) {
+    
+    final Color textColor = Theme.of(context).colorScheme.onBackground;
+    
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.documentTitle),
-        backgroundColor: const Color.fromRGBO(224, 124, 124, 1),
-        foregroundColor: Colors.white,
+        title: Text(widget.documentTitle,
+          style: TextStyle(color: textColor),
+        ),
+        centerTitle: true,
+        elevation: 0,
+        backgroundColor: Colors.transparent,
+        foregroundColor: textColor,
+        automaticallyImplyLeading: false,
+        leading: Center(
+          child: InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () => Navigator.of(context).pop(),
+            child: Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: const Color.fromRGBO(224, 124, 124, 1),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              alignment: Alignment.center,
+              child: const Icon(
+                Icons.arrow_back_ios_new,
+                color: Colors.white,
+                size: 16,
+              ),
+            ),
+          ),
+        ),
       ),
       body: Stack(
         children: [
