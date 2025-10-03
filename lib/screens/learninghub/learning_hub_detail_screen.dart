@@ -107,21 +107,23 @@ class _LearningHubDetailScreenState extends State<LearningHubDetailScreen> {
   try {
     // Determine the correct bucket based on content type
     final bucket = contentType.toLowerCase().contains('video') ? 'videos' : 'documents';
-    
-    // PERBAIKAN: Log untuk debug
+
+    // Debug prints
     print('📂 Opening content:');
     print('  - Bucket: $bucket');
     print('  - Content Path: $contentPath');
     print('  - Content Type: $contentType');
-    
+
     // Get public URL from Supabase storage
     final publicUrl = _supabaseService.getPublicUrl(bucket, contentPath);
-    
     print('🔗 Final URL: $publicUrl');
-    
+
     final lowerContentType = contentType.toLowerCase();
 
-    if (lowerContentType.contains('video')) {
+    // detect extension too (safer)
+    final ext = contentPath.split('.').last.toLowerCase();
+
+    if (lowerContentType.contains('video') || ext == 'mp4' || ext == 'mov' || ext == 'mkv') {
       // Navigate to video player
       Navigator.push(
         context,
@@ -132,19 +134,38 @@ class _LearningHubDetailScreenState extends State<LearningHubDetailScreen> {
           ),
         ),
       );
-    } else {
-      // For documents, use WebView or external app
+      return;
+    }
+
+    // If PDF -> use Google Docs viewer wrapper (works in WebView & browser)
+    if (ext == 'pdf' || lowerContentType.contains('pdf')) {
+      final encoded = Uri.encodeComponent(publicUrl);
+      final gdocViewer = 'https://docs.google.com/gview?embedded=true&url=$encoded';
+
       Navigator.push(
         context,
         MaterialPageRoute(
           builder: (context) => DocumentViewerScreen(
-            documentUrl: publicUrl,
+            documentUrl: gdocViewer,
             documentTitle: 'Lesson Document',
-            contentType: contentType,
+            contentType: 'pdf', // mark as pdf
           ),
         ),
       );
+      return;
     }
+
+    // Default: open in DocumentViewerScreen (for html, docx links etc.)
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => DocumentViewerScreen(
+          documentUrl: publicUrl,
+          documentTitle: 'Lesson Document',
+          contentType: contentType,
+        ),
+      ),
+    );
   } catch (e) {
     print('❌ Error opening content: $e');
     ScaffoldMessenger.of(context).showSnackBar(
@@ -152,6 +173,7 @@ class _LearningHubDetailScreenState extends State<LearningHubDetailScreen> {
     );
   }
 }
+
 
   Future<void> _toggleCompleted(int idx, bool currentlyCompleted) async {
   final user = _auth.currentUser;
