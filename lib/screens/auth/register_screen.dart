@@ -19,8 +19,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final TextEditingController _usernameController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
-  final TextEditingController _workUnitController = TextEditingController();
-  final TextEditingController _workplaceController = TextEditingController();
+  final TextEditingController _teamController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _confirmPasswordController =
       TextEditingController();
@@ -29,20 +28,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
   bool _isLoading = false;
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
-
-  void _clearAllFields() {
-    _nameController.clear();
-    _usernameController.clear();
-    _emailController.clear();
-    _phoneController.clear();
-    _workUnitController.clear();
-    _workplaceController.clear();
-    _passwordController.clear();
-    _confirmPasswordController.clear();
-    setState(() {
-      _selectedWorkType = null;
-    });
-  }
+  bool _isValidTeam = false;
+  Map<String, dynamic>? _selectedTeam;
 
   final List<String> _workTypes = [
     'Pre-staff',
@@ -54,9 +41,68 @@ class _RegisterScreenState extends State<RegisterScreen> {
   // Add form key
   final _formKey = GlobalKey<FormState>();
 
+  void _clearAllFields() {
+    _nameController.clear();
+    _usernameController.clear();
+    _emailController.clear();
+    _phoneController.clear();
+    _teamController.clear();
+    _passwordController.clear();
+    _confirmPasswordController.clear();
+    setState(() {
+      _selectedWorkType = null;
+      _isValidTeam = false;
+      _selectedTeam = null;
+    });
+  }
+
+  // Di RegisterScreen, perbaiki method _validateTeam:
+  Future<void> _validateTeam() async {
+    if (_teamController.text.isEmpty) {
+      setState(() {
+        _isValidTeam = false;
+        _selectedTeam = null;
+      });
+      return;
+    }
+
+    try {
+      // Gunakan getTeamByNoTeam bukan getTeamByTeamId
+      final team =
+          await _supabaseService.getTeamByNoTeam(_teamController.text.trim());
+      if (team != null) {
+        setState(() {
+          _isValidTeam = true;
+          _selectedTeam = team;
+        });
+      } else {
+        setState(() {
+          _isValidTeam = false;
+          _selectedTeam = null;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _isValidTeam = false;
+        _selectedTeam = null;
+      });
+    }
+  }
+
   void _register() async {
     // Validate form
     if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
+    // Validate team
+    if (!_isValidTeam || _selectedTeam == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter a valid team number'),
+          backgroundColor: Colors.red,
+        ),
+      );
       return;
     }
 
@@ -79,11 +125,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
           'username': _usernameController.text,
           'email': _emailController.text,
           'phone_number': _phoneController.text,
-          'work_unit': _workUnitController.text,
-          'work_place': _workplaceController.text,
           'work_type': _selectedWorkType,
+          'team_id': _selectedTeam!['id'],
           'profile_image': null,
-          'no_team': null,
           'created_at': DateTime.now().toUtc().toIso8601String(),
           'updated_at': DateTime.now().toUtc().toIso8601String(),
         };
@@ -183,13 +227,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
     // Colors that adapt to theme
     final primaryColor = isDarkMode
-        ? const Color.fromRGBO(180, 100, 100, 1) // Darker pink for dark mode
+        ? const Color.fromRGBO(180, 100, 100, 1)
         : const Color.fromRGBO(224, 124, 124, 1);
 
     final cardColor = theme.cardColor;
     final textColor = theme.textTheme.bodyLarge?.color;
     final hintColor = theme.hintColor;
-    final scaffoldBackground = theme.scaffoldBackgroundColor;
+    const successColor = Colors.green;
+    const errorColor = Colors.red;
 
     return Scaffold(
       resizeToAvoidBottomInset: true,
@@ -402,44 +447,67 @@ class _RegisterScreenState extends State<RegisterScreen> {
                               ),
                               const SizedBox(height: 15),
 
-                              // Work Unit
+                              // Team Number dengan validasi real-time
                               TextFormField(
-                                controller: _workUnitController,
+                                controller: _teamController,
                                 style: TextStyle(color: textColor),
-                                validator: (value) {
-                                  if (value == null || value.isEmpty) {
-                                    return 'Please enter your work unit';
-                                  }
-                                  return null;
-                                },
+                                onChanged: (value) => _validateTeam(),
                                 decoration: InputDecoration(
-                                  labelText: "Work Unit",
+                                  labelText: "Team Number",
                                   labelStyle: TextStyle(color: hintColor),
                                   border: const UnderlineInputBorder(),
                                   prefixIcon:
-                                      Icon(Icons.business, color: hintColor),
+                                      Icon(Icons.group, color: hintColor),
+                                  suffixIcon: _teamController.text.isNotEmpty
+                                      ? Icon(
+                                          _isValidTeam
+                                              ? Icons.check_circle
+                                              : Icons.error,
+                                          color: _isValidTeam
+                                              ? successColor
+                                              : errorColor,
+                                        )
+                                      : null,
+                                  hintText: "Enter your assigned team number",
                                 ),
                               ),
-                              const SizedBox(height: 15),
-
-                              // Workplace
-                              TextFormField(
-                                controller: _workplaceController,
-                                style: TextStyle(color: textColor),
-                                validator: (value) {
-                                  if (value == null || value.isEmpty) {
-                                    return 'Please enter your workplace';
-                                  }
-                                  return null;
-                                },
-                                decoration: InputDecoration(
-                                  labelText: "Workplace",
-                                  labelStyle: TextStyle(color: hintColor),
-                                  border: const UnderlineInputBorder(),
-                                  prefixIcon:
-                                      Icon(Icons.work, color: hintColor),
+                              if (_teamController.text.isNotEmpty &&
+                                  !_isValidTeam)
+                                const Padding(
+                                  padding: EdgeInsets.only(top: 8.0),
+                                  child: Text(
+                                    'Invalid team number. Please check with your administrator.',
+                                    style: TextStyle(
+                                      color: errorColor,
+                                      fontSize: 12,
+                                    ),
+                                  ),
                                 ),
-                              ),
+                              if (_isValidTeam && _selectedTeam != null)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 8.0),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'Team: ${_selectedTeam!['work_team']}',
+                                        style: const TextStyle(
+                                          color: successColor,
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                      Text(
+                                        'Workplace: ${_selectedTeam!['work_place']}',
+                                        style: const TextStyle(
+                                          color: successColor,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
                               const SizedBox(height: 15),
 
                               // Work Type Dropdown
@@ -487,24 +555,19 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                   if (value == null || value.isEmpty) {
                                     return 'Please enter a password';
                                   }
-                                  // Check minimum 12 characters
                                   if (value.length < 12) {
                                     return 'Password must be at least 12 characters';
                                   }
-                                  // Check for number
                                   if (!RegExp(r'[0-9]').hasMatch(value)) {
                                     return 'Password must contain at least one number';
                                   }
-                                  // Check for symbol
                                   if (!RegExp(r'[!@#\$%^&*(),.?":{}|<>]')
                                       .hasMatch(value)) {
                                     return 'Password must contain at least one symbol';
                                   }
-                                  // Check for uppercase
                                   if (!RegExp(r'[A-Z]').hasMatch(value)) {
                                     return 'Password must contain at least one uppercase letter';
                                   }
-                                  // Check for lowercase
                                   if (!RegExp(r'[a-z]').hasMatch(value)) {
                                     return 'Password must contain at least one lowercase letter';
                                   }
@@ -576,9 +639,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                   ? const Center(
                                       child: CircularProgressIndicator())
                                   : ElevatedButton(
-                                      onPressed: _register,
+                                      onPressed:
+                                          _isValidTeam ? _register : null,
                                       style: ElevatedButton.styleFrom(
-                                        backgroundColor: primaryColor,
+                                        backgroundColor: _isValidTeam
+                                            ? primaryColor
+                                            : Colors.grey,
                                         padding: const EdgeInsets.symmetric(
                                             vertical: 16),
                                         shape: RoundedRectangleBorder(

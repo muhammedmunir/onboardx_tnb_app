@@ -36,6 +36,65 @@ class SupabaseService {
     }
   }
 
+  Future<Map<String, dynamic>?> getUserProfileForApp(String uid) async {
+    try {
+      final user =
+          await getUser(uid); // existing method yang return snake_case map
+      if (user == null) return null;
+
+      // Build camelCase map
+      final Map<String, dynamic> out = {
+        'uid': user['uid'],
+        'fullName': user['full_name'] ?? '',
+        'username': user['username'] ?? '',
+        'email': user['email'] ?? '',
+        'phoneNumber': user['phone_number'] ?? '',
+        'workType': user['work_type'] ?? '',
+        'workplace': user['workplace'] ?? '',
+        // keep legacy workUnit key if UI expects it — we'll map to team.work_team if available
+        'workUnit':
+            user['work_unit'] ?? user['work_unit'], // placeholder if exists
+      };
+
+      // If user has team_id, fetch team by no_team
+      if (user['team_id'] != null) {
+        try {
+          final team = await getTeamByNoTeam(user['team_id'].toString());
+          if (team != null) {
+            out['workUnit'] = team['work_team'] ?? out['workUnit'] ?? '';
+            out['workTeam'] = team['work_team'] ?? '';
+            out['workPlace'] = team['work_place'] ?? '';
+            // also keep workplace if user.workplace was empty
+            if ((out['workplace'] == null ||
+                    out['workplace'].toString().isEmpty) &&
+                (team['work_place'] != null)) {
+              out['workplace'] = team['work_place'];
+            }
+          }
+        } catch (e) {
+          print('⚠ Failed to fetch team info for user $uid: $e');
+        }
+      }
+
+      // profile image -> public url
+      if (user['profile_image'] != null &&
+          (user['profile_image'] as String).isNotEmpty) {
+        try {
+          // getPublicUrl is synchronous in your file; returns url string
+          out['profileImageUrl'] =
+              getPublicUrl('profile-images', user['profile_image']);
+        } catch (e) {
+          print('⚠ Failed to generate profile image URL: $e');
+        }
+      }
+
+      return out;
+    } catch (e) {
+      print('❌ getUserProfileForApp failed: $e');
+      throw Exception('Failed to get user profile for app: $e');
+    }
+  }
+
   // Create user and return inserted row (or throw on error)
   Future<Map<String, dynamic>> createUser(Map<String, dynamic> userData) async {
     try {
@@ -82,6 +141,30 @@ class SupabaseService {
     } catch (e) {
       print('❌ Failed to check username: $e');
       throw Exception('Failed to check username: $e');
+    }
+  }
+
+  Future<Map<String, dynamic>?> getTeamByNoTeam(String noTeam) async {
+    try {
+      final response = await client
+          .from('teams')
+          .select()
+          .eq('no_team', noTeam) // Cari berdasarkan no_team bukan team_id
+          .maybeSingle();
+      return response;
+    } catch (e) {
+      print('❌ Failed to get team by no_team: $e');
+      throw Exception('Failed to get team by no_team: $e');
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> getAllTeams() async {
+    try {
+      final response = await client.from('teams').select().order('no_team');
+      return response;
+    } catch (e) {
+      print('❌ Failed to get teams: $e');
+      throw Exception('Failed to get teams: $e');
     }
   }
 
@@ -137,24 +220,24 @@ class SupabaseService {
 
   // getPublicUrl menjadi synchronous karena di Supabase ini synchronous operation
   String getPublicUrl(String bucket, String path) {
-  try {
-    // PERBAIKAN: Bersihkan path dari awalan bucket jika ada
-    String cleanPath = path;
-    if (cleanPath.startsWith('$bucket/')) {
-      cleanPath = cleanPath.substring(bucket.length + 1);
+    try {
+      // PERBAIKAN: Bersihkan path dari awalan bucket jika ada
+      String cleanPath = path;
+      if (cleanPath.startsWith('$bucket/')) {
+        cleanPath = cleanPath.substring(bucket.length + 1);
+      }
+      if (cleanPath.startsWith('/')) {
+        cleanPath = cleanPath.substring(1);
+      }
+
+      final url = client.storage.from(bucket).getPublicUrl(cleanPath);
+      print('🔗 Generated public URL for $bucket: $url');
+      return url;
+    } catch (e) {
+      print('❌ Failed to get public URL for bucket $bucket, path $path: $e');
+      throw Exception('Failed to get public URL: $e');
     }
-    if (cleanPath.startsWith('/')) {
-      cleanPath = cleanPath.substring(1);
-    }
-    
-    final url = client.storage.from(bucket).getPublicUrl(cleanPath);
-    print('🔗 Generated public URL for $bucket: $url');
-    return url;
-  } catch (e) {
-    print('❌ Failed to get public URL for bucket $bucket, path $path: $e');
-    throw Exception('Failed to get public URL: $e');
   }
-}
 
   // Check if file exists in storage
   Future<bool> fileExists(String bucket, String path) async {

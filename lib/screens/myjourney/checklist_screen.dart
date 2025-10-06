@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 class ChecklistScreen extends StatefulWidget {
@@ -11,9 +11,11 @@ class ChecklistScreen extends StatefulWidget {
 }
 
 class _ChecklistScreenState extends State<ChecklistScreen> {
-  // Firebase instances
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  // Firebase Auth instance (hanya untuk auth)
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  
+  // Supabase client
+  final SupabaseClient _supabase = Supabase.instance.client;
   
   // Project and task data
   List<Map<String, dynamic>> _projects = [];
@@ -31,7 +33,7 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
   @override
   void initState() {
     super.initState();
-    // Load data from Firebase
+    // Load data from Supabase
     _loadProjects();
     _loadTasks();
   }
@@ -48,29 +50,26 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
     try {
       final user = _auth.currentUser;
       if (user != null) {
-        final querySnapshot = await _firestore
-            .collection('projects')
-            .where('userId', isEqualTo: user.uid)
-            .get();
+        final response = await _supabase
+            .from('projects')
+            .select()
+            .eq('user_id', user.uid)
+            .order('created_at', ascending: false);
 
-        if (!mounted) return; // <<< safety check
+        if (!mounted) return;
+
         setState(() {
-          _projects = querySnapshot.docs.map((doc) {
-            final data = doc.data();
-            // defensive access in case fields missing
-            Timestamp? s = data['startDate'] is Timestamp ? data['startDate'] as Timestamp : null;
-            Timestamp? e = data['endDate'] is Timestamp ? data['endDate'] as Timestamp : null;
+          _projects = (response as List).map((doc) {
             return {
-              'id': doc.id,
-              'title': data['title'] ?? '',
-              'startDate': s?.toDate() ?? DateTime.now(),
-              'endDate': e?.toDate() ?? DateTime.now().add(const Duration(days: 7)),
+              'id': doc['id'].toString(),
+              'title': doc['title'] ?? '',
+              'startDate': DateTime.parse(doc['start_date']),
+              'endDate': DateTime.parse(doc['end_date']),
             };
           }).toList();
         });
       }
     } catch (e) {
-      // avoid calling setState inside catch without mounted
       print('Error loading projects: $e');
     }
   }
@@ -79,23 +78,23 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
     try {
       final user = _auth.currentUser;
       if (user != null) {
-        final querySnapshot = await _firestore
-            .collection('tasks')
-            .where('userId', isEqualTo: user.uid)
-            .get();
+        final response = await _supabase
+            .from('tasks')
+            .select()
+            .eq('user_id', user.uid)
+            .order('created_at', ascending: false);
 
-        if (!mounted) return; // <<< safety check
+        if (!mounted) return;
+
         setState(() {
-          _tasks = querySnapshot.docs.map((doc) {
-            final data = doc.data();
-            Timestamp? d = data['dueDate'] is Timestamp ? data['dueDate'] as Timestamp : null;
+          _tasks = (response as List).map((doc) {
             return {
-              'id': doc.id,
-              'projectId': data['projectId'],
-              'title': data['title'] ?? '',
-              'description': data['description'] ?? '',
-              'dueDate': d?.toDate() ?? DateTime.now().add(const Duration(days: 1)),
-              'completed': data['completed'] ?? false,
+              'id': doc['id'].toString(),
+              'projectId': doc['project_id'].toString(),
+              'title': doc['title'] ?? '',
+              'description': doc['description'] ?? '',
+              'dueDate': DateTime.parse(doc['due_date']),
+              'completed': doc['completed'] ?? false,
             };
           }).toList();
         });
@@ -109,14 +108,13 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
     try {
       final user = _auth.currentUser;
       if (user != null) {
-        await _firestore.collection('projects').add({
+        await _supabase.from('projects').insert({
           'title': project['title'],
-          'startDate': Timestamp.fromDate(project['startDate']),
-          'endDate': Timestamp.fromDate(project['endDate']),
-          'userId': user.uid,
-          'createdAt': Timestamp.now(),
+          'start_date': project['startDate'].toIso8601String(),
+          'end_date': project['endDate'].toIso8601String(),
+          'user_id': user.uid,
         });
-        // reload after add
+
         if (!mounted) return;
         await _loadProjects();
       }
@@ -129,15 +127,15 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
     try {
       final user = _auth.currentUser;
       if (user != null) {
-        await _firestore.collection('tasks').add({
-          'projectId': task['projectId'],
+        await _supabase.from('tasks').insert({
+          'project_id': int.parse(task['projectId']),
           'title': task['title'],
           'description': task['description'],
-          'dueDate': Timestamp.fromDate(task['dueDate']),
+          'due_date': task['dueDate'].toIso8601String(),
           'completed': task['completed'],
-          'userId': user.uid,
-          'createdAt': Timestamp.now(),
+          'user_id': user.uid,
         });
+
         if (!mounted) return;
         await _loadTasks();
       }
@@ -148,7 +146,13 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
 
   Future<void> _updateTask(String taskId, Map<String, dynamic> updates) async {
     try {
-      await _firestore.collection('tasks').doc(taskId).update(updates);
+      await _supabase.from('tasks').update({
+        'title': updates['title'],
+        'description': updates['description'],
+        'due_date': updates['dueDate'].toIso8601String(),
+        'project_id': int.parse(updates['projectId']),
+      }).eq('id', int.parse(taskId));
+
       if (!mounted) return;
       await _loadTasks();
     } catch (e) {
@@ -158,7 +162,11 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
 
   Future<void> _deleteTask(String taskId) async {
     try {
-      await _firestore.collection('tasks').doc(taskId).delete();
+      await _supabase
+          .from('tasks')
+          .delete()
+          .eq('id', int.parse(taskId));
+
       if (!mounted) return;
       await _loadTasks();
     } catch (e) {
@@ -168,27 +176,43 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
 
   Future<void> _deleteProject(String projectId) async {
     try {
-      // First delete all tasks associated with this project
-      final tasksQuery = await _firestore
-          .collection('tasks')
-          .where('projectId', isEqualTo: projectId)
-          .get();
-
-      for (var doc in tasksQuery.docs) {
-        await doc.reference.delete();
-      }
+      // Delete all tasks associated with this project first
+      await _supabase
+          .from('tasks')
+          .delete()
+          .eq('project_id', int.parse(projectId));
 
       // Then delete the project
-      await _firestore.collection('projects').doc(projectId).delete();
+      await _supabase
+          .from('projects')
+          .delete()
+          .eq('id', int.parse(projectId));
       
       if (!mounted) return;
-      await _loadProjects(); // Reload projects after deleting
+      await _loadProjects();
       if (!mounted) return;
-      await _loadTasks(); // Reload tasks after deleting
+      await _loadTasks();
     } catch (e) {
       print('Error deleting project: $e');
     }
   }
+
+  // Toggle task completion
+  Future<void> _toggleTaskCompletion(Map<String, dynamic> task) async {
+    try {
+      await _supabase.from('tasks').update({
+        'completed': !task['completed'],
+      }).eq('id', int.parse(task['id']));
+
+      if (!mounted) return;
+      await _loadTasks();
+    } catch (e) {
+      print('Error toggling task completion: $e');
+    }
+  }
+
+  // Metode UI lainnya tetap sama (_showAddOptionsDialog, _showAddProjectDialog, dll)
+  // Hanya ganti bagian Firebase dengan Supabase seperti di atas
 
   void _showAddOptionsDialog() {
     final theme = Theme.of(context);
@@ -348,7 +372,7 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
                         'endDate': _projectEndDate,
                       };
 
-                      // Add to Firebase
+                      // Add to Supabase
                       _addProject(newProject);
 
                       Navigator.pop(context);
@@ -505,7 +529,7 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
                         'completed': false,
                       };
 
-                      // Add to Firebase
+                      // Add to Supabase
                       _addTask(newTask);
 
                       Navigator.pop(context);
@@ -652,11 +676,11 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
                 ElevatedButton(
                   onPressed: () {
                     if (_taskTitleController.text.isNotEmpty) {
-                      // Update task in Firebase
+                      // Update task in Supabase
                       _updateTask(task['id'], {
                         'title': _taskTitleController.text,
                         'description': _taskDescriptionController.text,
-                        'dueDate': Timestamp.fromDate(_taskDueDate),
+                        'dueDate': _taskDueDate,
                         'projectId': _selectedProject?['id'],
                       });
 
@@ -776,12 +800,8 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
     return _getTasksForProject(projectId).length;
   }
 
-  void _toggleTaskCompletion(Map<String, dynamic> task) {
-    // no direct setState here: update via backend and reload tasks
-    _updateTask(task['id'], {
-      'completed': !task['completed'],
-    });
-  }
+  // Metode build dan _buildTaskItem tetap sama seperti sebelumnya
+  // Hanya ganti _toggleTaskCompletion yang sudah diupdate di atas
 
   @override
   Widget build(BuildContext context) {
@@ -794,7 +814,7 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
     
     // Colors that adapt to theme
     final primaryColor = isDarkMode 
-        ? const Color.fromRGBO(180, 100, 100, 1) // Darker pink for dark mode
+        ? const Color.fromRGBO(180, 100, 100, 1)
         : const Color(0xFFE07C7C);
 
     return Scaffold(
@@ -1067,8 +1087,8 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
                           
                           // Completed Tasks Section
                           if (_getCompletedTasksForProject(_selectedProject!['id']).isNotEmpty) ...[
-                            Padding(
-                              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                            const Padding(
+                              padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
                               child: Text(
                                 'Completed Tasks',
                                 style: TextStyle(
@@ -1155,7 +1175,6 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
         child: const Icon(Icons.delete, color: Colors.white),
       ),
       confirmDismiss: (direction) async {
-        // Show confirmation dialog before deleting
         if (!mounted) return false;
         return await showDialog(
           context: context,
@@ -1233,6 +1252,7 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
                       color: task['completed'] 
                           ? hintColor 
                           : textColor,
+                      decoration: task['completed'] ? TextDecoration.lineThrough : TextDecoration.none,
                     ),
                   ),
                   if (task['description'] != null && task['description'].isNotEmpty)
@@ -1243,6 +1263,7 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
                         style: TextStyle(
                           fontSize: 14,
                           color: hintColor,
+                          decoration: task['completed'] ? TextDecoration.lineThrough : TextDecoration.none,
                         ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
@@ -1267,6 +1288,7 @@ class _ChecklistScreenState extends State<ChecklistScreen> {
                             color: task['completed'] 
                                 ? hintColor 
                                 : primaryColor,
+                            decoration: task['completed'] ? TextDecoration.lineThrough : TextDecoration.none,
                           ),
                         ),
                       ],

@@ -1,4 +1,4 @@
-// manage_your_account_screen.dart
+// manage_your_account_screen.dart (updated)
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -43,32 +43,71 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
     try {
       User? user = _auth.currentUser;
       if (user != null) {
-        // Fetch from Supabase only
+        // Fetch from Supabase only (Firebase only for auth)
         final userProfile = await _supabaseService.getUserProfile(user.uid);
-        
+
+        // Debug logs
+        print('ManageAccount: userProfile => $userProfile');
+
         if (userProfile != null) {
+          // Build local map with consistent keys used by the UI
+          final Map<String, dynamic> local = {
+            'fullName': userProfile['full_name'] ?? '',
+            'username': userProfile['username'] ?? '',
+            'email': userProfile['email'] ?? user.email ?? '',
+            'phoneNumber': userProfile['phone_number'] ?? '',
+            // keep workType if present on user row
+            'workType': userProfile['work_type'] ?? '',
+            // fallback placeholders for team values; will replace if team found
+            'workTeam': '',
+            'workPlace': userProfile['work_place'] ?? '',
+            'profileImageUrl': userProfile['profile_image_url'] ?? '',
+            'created_at': userProfile['created_at']?.toString(),
+          };
+
+          // If team_id exists on user row, fetch team data from teams table
+          try {
+            final teamId = userProfile['team_id'] ?? userProfile['teamId'];
+            print('ManageAccount: teamId => $teamId');
+            if (teamId != null) {
+              final teamData = await _supabase_service_getTeamSafely(teamId);
+              print('ManageAccount: teamData => $teamData');
+              if (teamData != null) {
+                local['workTeam'] = teamData['work_team'] ?? '';
+                local['workPlace'] = teamData['work_place'] ?? local['workPlace'];
+              }
+            } else {
+              // No team_id: maybe older schema stored work unit/name directly on user row
+              local['workTeam'] = userProfile['work_team'] ?? userProfile['work_unit'] ?? '';
+            }
+          } catch (e) {
+            print('ManageAccount: failed to load team info: $e');
+            // leave workTeam/workPlace as fallback values
+          }
+
           setState(() {
-            _userData = {
-              'fullName': userProfile['full_name'] ?? '',
-              'username': userProfile['username'] ?? '',
-              'email': userProfile['email'] ?? '',
-              'phoneNumber': userProfile['phone_number'] ?? '',
-              'workUnit': userProfile['work_unit'] ?? '',
-              'workplace': userProfile['work_place'] ?? '',
-              'workType': userProfile['work_type'] ?? '',
-              'profileImageUrl': userProfile['profile_image_url'],
-              'created_at': userProfile['created_at'],
-            };
-            
+            _userData = local;
             nameCtrl.text = _userData['fullName'] ?? '';
             phoneCtrl.text = _userData['phoneNumber'] ?? '';
             usernameCtrl.text = _userData['username'] ?? '';
             _loading = false;
           });
         } else {
-          // If no data in Supabase, use data from widget.user
+          // If no data in Supabase, fallback to widget.user
           setState(() {
-            _userData = widget.user;
+            // Map fallback keys to the UI keys
+            _userData = {
+              'fullName': widget.user['fullName'] ?? widget.user['full_name'] ?? '',
+              'username': widget.user['username'] ?? '',
+              'email': widget.user['email'] ?? '',
+              'phoneNumber': widget.user['phoneNumber'] ?? widget.user['phone_number'] ?? '',
+              'workType': widget.user['workType'] ?? widget.user['work_type'] ?? '',
+              'workTeam': widget.user['workUnit'] ?? widget.user['work_team'] ?? '',
+              'workPlace': widget.user['workplace'] ?? widget.user['work_place'] ?? '',
+              'profileImageUrl': widget.user['profileImageUrl'] ?? '',
+              'created_at': widget.user['created_at']?.toString(),
+            };
+
             nameCtrl.text = _userData['fullName'] ?? '';
             phoneCtrl.text = _userData['phoneNumber'] ?? '';
             usernameCtrl.text = _userData['username'] ?? '';
@@ -77,15 +116,38 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
         }
       }
     } catch (e) {
-      print("Error fetching user data: $e");
+      print('Error fetching user data: $e');
       // Fallback to widget.user data if error occurs
       setState(() {
-        _userData = widget.user;
+        _userData = {
+          'fullName': widget.user['fullName'] ?? widget.user['full_name'] ?? '',
+          'username': widget.user['username'] ?? '',
+          'email': widget.user['email'] ?? '',
+          'phoneNumber': widget.user['phoneNumber'] ?? widget.user['phone_number'] ?? '',
+          'workType': widget.user['workType'] ?? widget.user['work_type'] ?? '',
+          'workTeam': widget.user['workUnit'] ?? widget.user['work_team'] ?? '',
+          'workPlace': widget.user['workplace'] ?? widget.user['work_place'] ?? '',
+          'profileImageUrl': widget.user['profileImageUrl'] ?? '',
+          'created_at': widget.user['created_at']?.toString(),
+        };
+
         nameCtrl.text = _userData['fullName'] ?? '';
         phoneCtrl.text = _userData['phoneNumber'] ?? '';
         usernameCtrl.text = _userData['username'] ?? '';
         _loading = false;
       });
+    }
+  }
+
+  // small helper that calls SupabaseService.getTeamByNoTeam but handles numeric vs string ids
+  Future<Map<String, dynamic>?> _supabase_service_getTeamSafely(dynamic teamId) async {
+    try {
+      if (teamId == null) return null;
+      // teamId might be numeric (bigint) or string - convert to string
+      return await _supabaseService.getTeamByNoTeam(teamId.toString());
+    } catch (e) {
+      print('getTeamSafely error: $e');
+      return null;
     }
   }
 
@@ -99,7 +161,7 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
 
   Future<void> _pickImage() async {
     if (!_editing) return;
-    
+
     final picker = ImagePicker();
     try {
       final XFile? file = await picker.pickImage(
@@ -108,12 +170,12 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
         maxHeight: 1200,
         imageQuality: 85,
       );
-      
+
       if (file != null) {
         final imageFile = File(file.path);
         final fileSize = await imageFile.length();
         const maxSize = 10 * 1024 * 1024; // 10MB
-        
+
         // Check file size
         if (fileSize > maxSize) {
           if (mounted) {
@@ -127,11 +189,11 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
           }
           return;
         }
-        
+
         // Check file extension
         final fileExtension = file.path.split('.').last.toLowerCase();
         final supportedFormats = SupabaseService.supportedImageFormats;
-        
+
         if (!supportedFormats.contains(fileExtension)) {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -146,7 +208,7 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
           }
           return;
         }
-        
+
         setState(() => _pickedImage = imageFile);
       }
     } catch (e) {
@@ -163,7 +225,8 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
     }
   }
 
-  String _formatDateTime(String dateTimeString) {
+  String _formatDateTime(String? dateTimeString) {
+    if (dateTimeString == null) return 'Unknown date';
     try {
       final date = DateTime.parse(dateTimeString);
       final format = DateFormat('dd MMMM yyyy \'at\' HH:mm:ss');
@@ -181,7 +244,7 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
       User? user = _auth.currentUser;
       if (user == null) return;
 
-      // Use the new updateUserProfileWithImage method that handles old image deletion
+      // Use the existing SupabaseService method that handles uploading and cleaning old images
       await _supabaseService.updateUserProfileWithImage(
         uid: user.uid,
         fullName: nameCtrl.text.trim(),
@@ -208,7 +271,7 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
       }
     } on Exception catch (e) {
       String errorMessage = 'Error updating profile';
-      
+
       // User-friendly error messages
       if (e.toString().contains('Unsupported image format')) {
         errorMessage = 'Unsupported image format. Please use JPG, PNG, GIF, WebP, BMP, HEIC, or HEIF.';
@@ -219,7 +282,7 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
       } else {
         errorMessage = 'Error updating profile: ${e.toString().replaceAll('Exception: ', '')}';
       }
-      
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -309,12 +372,12 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final bool isDarkMode = theme.brightness == Brightness.dark;
-    final primaryColor = isDarkMode 
+    final primaryColor = isDarkMode
         ? const Color.fromRGBO(180, 100, 100, 1)
         : const Color.fromRGBO(224, 124, 124, 1);
     final cardColor = theme.cardColor;
 
-    final String? createdAtString = _userData['created_at'];
+    final String? createdAtString = _userData['created_at']?.toString();
 
     if (_loading) {
       return Scaffold(
@@ -398,7 +461,7 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
         child: Column(
           children: [
             const SizedBox(height: 16),
-            
+
             // Profile Image Section
             Column(
               children: [
@@ -412,10 +475,10 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
                           radius: 48,
                           backgroundImage: FileImage(_pickedImage!),
                         )
-                      else if (_userData['profileImageUrl'] != null && _userData['profileImageUrl'].isNotEmpty)
+                      else if (_userData['profileImageUrl'] != null && _userData['profileImageUrl'].toString().isNotEmpty)
                         CircleAvatar(
                           radius: 48,
-                          backgroundImage: NetworkImage(_userData['profileImageUrl']),
+                          backgroundImage: NetworkImage(_userData['profileImageUrl'].toString()),
                           onBackgroundImageError: (exception, stackTrace) {
                             print("Error loading profile image: $exception");
                           },
@@ -426,7 +489,7 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
                           backgroundColor: Colors.white,
                           child: Icon(Icons.person, size: 40, color: Colors.grey),
                         ),
-                      
+
                       // Camera icon for editing
                       if (_editing)
                         Positioned(
@@ -464,7 +527,7 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
                 ),
               ],
             ),
-            
+
             const SizedBox(height: 24),
 
             Form(
@@ -472,7 +535,7 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
               child: Column(
                 children: [
                   _buildSectionHeader('Account Information'),
-                  
+
                   // Username Field
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -495,7 +558,7 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
                         : _buildReadOnlyField('Username', _userData['username'] ?? ''),
                   ),
                   const SizedBox(height: 16),
-                  
+
                   // Full Name Field
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -518,11 +581,11 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
                         : _buildReadOnlyField('Full Name', _userData['fullName'] ?? ''),
                   ),
                   const SizedBox(height: 16),
-                  
+
                   // Email Field (always read-only)
                   _buildReadOnlyField('Email', _userData['email'] ?? ''),
                   const SizedBox(height: 16),
-                  
+
                   // Phone Number Field
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -549,9 +612,10 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
                   const SizedBox(height: 24),
 
                   _buildSectionHeader('Work Information'),
+                  // Show Work Type, Work Team (instead of Work Unit) and Workplace
                   _buildReadOnlyField('Work Type', _userData['workType'] ?? ''),
-                  _buildReadOnlyField('Work Unit', _userData['workUnit'] ?? ''),
-                  _buildReadOnlyField('Workplace', _userData['workplace'] ?? ''),
+                  _buildReadOnlyField('Work Team', _userData['workTeam'] ?? ''),
+                  _buildReadOnlyField('Workplace', _userData['workPlace'] ?? ''),
                   const SizedBox(height: 24),
 
                   _buildSectionHeader('Account Metadata'),
@@ -576,7 +640,7 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
                         const Text('Created at'),
                         const Spacer(),
                         Text(
-                          createdAtString != null 
+                          createdAtString != null
                               ? _formatDateTime(createdAtString)
                               : 'Unknown',
                           style: TextStyle(
@@ -586,7 +650,7 @@ class _ManageAccountScreenState extends State<ManageAccountScreen> {
                       ],
                     ),
                   ),
-                  
+
                   // Save Button (only when editing)
                   if (_editing) ...[
                     const SizedBox(height: 32),

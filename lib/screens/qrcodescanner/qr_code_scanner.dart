@@ -1,16 +1,19 @@
 // lib/screens/scan_qr_screen.dart
 import 'package:flutter/material.dart';
 
-// alias mobile_scanner sebagai ms untuk elakkan konflik nama Phone/Email dll
+// alias mobile_scanner sebagai ms
 import 'package:mobile_scanner/mobile_scanner.dart' as ms;
 
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:onboardx_tnb_app/services/supabase_service.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 // alias flutter_contacts sebagai fc
 import 'package:flutter_contacts/flutter_contacts.dart' as fc;
+
+// IMPORTANT: sesuaikan path import berikut ikut struktur projek anda:
+import 'user_detail_screen.dart'; // <-- pastikan UserDetailScreen wujud dan menerima userData & isVCard
 
 class ScanQrScreen extends StatefulWidget {
   const ScanQrScreen({super.key});
@@ -27,11 +30,12 @@ class _ScanQrScreenState extends State<ScanQrScreen>
   bool _cameraPermissionGranted = false;
 
   late final TabController _tabController;
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final SupabaseService _supabase = SupabaseService();
   final FirebaseAuth _auth = FirebaseAuth.instance;
+
   Map<String, dynamic>? _currentUserData;
 
-  // NEW: toggle sama ada QR mengandungi vCard (boleh di-scan oleh kamera biasa)
+  // Toggle untuk QR vCard vs app-uid
   bool _qrAsVCard = false;
 
   @override
@@ -62,11 +66,12 @@ class _ScanQrScreenState extends State<ScanQrScreen>
   Future<void> _fetchCurrentUserData() async {
     final user = _auth.currentUser;
     if (user != null) {
-      final doc = await _firestore.collection('users').doc(user.uid).get();
-      if (doc.exists) {
-        setState(() => _currentUserData = Map<String, dynamic>.from(doc.data()!));
-      } else {
-        setState(() => _currentUserData = {});
+      try {
+        final profile = await _supabase.getUserProfileForApp(user.uid);
+        if (mounted) setState(() => _currentUserData = profile ?? {});
+      } catch (e) {
+        if (mounted) setState(() => _currentUserData = {});
+        debugPrint('Failed to fetch current user data from Supabase: $e');
       }
     }
   }
@@ -77,47 +82,89 @@ class _ScanQrScreenState extends State<ScanQrScreen>
     final rawList = capture.barcodes;
     if (rawList.isEmpty) return;
 
-    final String? scannedUid = rawList.first.rawValue;
-    if (scannedUid == null || scannedUid.isEmpty) return;
+    final String? raw = rawList.first.rawValue;
+    if (raw == null || raw.isEmpty) return;
 
-    // NOTE: if you encode vCard in QR, the captured rawValue will be the full vCard text.
-    // In that case your app logic must detect whether it's a UID or a vCard. Here we assume app QR for scanning app-to-app contains UID.
-    // If you expect vCard scans from external apps, you probably won't handle them here.
+    // If raw contains vCard text
+    final isVCard = raw.trim().toUpperCase().startsWith('BEGIN:VCARD');
 
-    if (scannedUid == _auth.currentUser?.uid) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("You can't scan your own QR code")),
-        );
+    // If it's an app QR (we expect uid) — otherwise treat as vCard / external QR
+    if (!isVCard) {
+      // assume app QR contains uid (string)
+      final scannedUid = raw;
+      if (scannedUid == _auth.currentUser?.uid) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("You can't scan your own QR code")),
+          );
+        }
+        return;
       }
-      return;
+      _onScanDetected(scannedUid: scannedUid, isVCard: false, rawVCard: null);
+    } else {
+      // vCard scanned
+      _onScanDetected(scannedUid: null, isVCard: true, rawVCard: raw);
     }
+  }
+
+  Future<void> _onScanDetected({
+    String? scannedUid,
+    required bool isVCard,
+    String? rawVCard,
+  }) async {
+    if (!_scanning) return;
 
     setState(() {
       _scanning = false;
       _loading = true;
     });
 
-    // stop camera to avoid multiple detections
-    cameraController.stop();
-    _processScannedUid(scannedUid);
-  }
-
-  Future<void> _processScannedUid(String scannedUid) async {
+    // stop camera to avoid duplicate scans
     try {
-      final doc = await _firestore.collection('users').doc(scannedUid).get();
+      await cameraController.stop();
+    } catch (_) {}
 
-      if (doc.exists) {
-        final userData = Map<String, dynamic>.from(doc.data()!);
-        userData['uid'] = scannedUid; // pastikan ada uid
-        _showUserContactDialog(userData);
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('User not found')),
-          );
-        }
+    try {
+      Map<String, dynamic>? userData;
+      if (isVCard) {
+        userData = _parseVCard(rawVCard ?? '');
+        userData['uid'] = null;
+        // Navigate to detail screen with isVCard true
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => UserDetailScreen(userData: userData!, isVCard: true),
+          ),
+        );
+        // when returning, reset scanner
         _resetScanner();
+        return;
+      } else {
+        // fetch from supabase using uid
+        final profile = await _supabase.getUserProfileForApp(scannedUid!);
+        if (profile == null) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('User not found')),
+            );
+          }
+          _resetScanner();
+          return;
+        }
+
+        userData = profile;
+
+        // Navigate to detail screen (app user)
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => UserDetailScreen(userData: userData!, isVCard: false),
+          ),
+        );
+
+        // on return, reset scanner
+        _resetScanner();
+        return;
       }
     } catch (e) {
       if (mounted) {
@@ -131,55 +178,37 @@ class _ScanQrScreenState extends State<ScanQrScreen>
     }
   }
 
-  void _showUserContactDialog(Map<String, dynamic> userData) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: const Text('User Found'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (userData['profileImageUrl'] != null &&
-                  (userData['profileImageUrl'] as String).isNotEmpty)
-                Center(
-                  child: CircleAvatar(
-                    radius: 40,
-                    backgroundImage: NetworkImage(userData['profileImageUrl']),
-                  ),
-                ),
-              const SizedBox(height: 12),
-              Text('Name: ${userData['fullName'] ?? 'N/A'}'),
-              Text('Username: ${userData['username'] ?? 'N/A'}'),
-              Text('Email: ${userData['email'] ?? 'N/A'}'),
-              Text('Phone: ${userData['phoneNumber'] ?? 'N/A'}'),
-              Text('Work: ${userData['workType'] ?? 'N/A'}'),
-              Text('Unit: ${userData['workUnit'] ?? 'N/A'}'),
-              Text('Workplace: ${userData['workplace'] ?? 'N/A'}'),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _resetScanner();
-            },
-            child: const Text('Close'),
-          ),
-          // Keep only Save to Phone (no Save to App)
-          TextButton(
-            onPressed: () async {
-              Navigator.pop(context);
-              await _saveContactToPhone(userData);
-            },
-            child: const Text('Save to Phone'),
-          ),
-        ],
-      ),
-    );
+  /// Very small vCard parser: extracts FN, N, TEL, EMAIL, ORG, TITLE
+  Map<String, dynamic> _parseVCard(String raw) {
+    final lines = raw.split(RegExp(r'\r\n|\n|\r'));
+    final Map<String, String> m = {};
+    for (final l in lines) {
+      final line = l.trim();
+      if (line.isEmpty) continue;
+      final idx = line.indexOf(':');
+      if (idx <= 0) continue;
+      final key = line.substring(0, idx).toUpperCase();
+      final value = line.substring(idx + 1);
+      // Remove parameters like TEL;TYPE=CELL -> TEL
+      final simpleKey = key.split(';').first;
+      m[simpleKey] = value;
+    }
+
+    String fullName = m['FN'] ?? '';
+    if (fullName.isEmpty && m['N'] != null) {
+      final parts = m['N']!.split(';');
+      fullName = ((parts.length > 1 ? parts[1] : '') + ' ' + (parts[0] ?? '')).trim();
+    }
+
+    return {
+      'fullName': fullName,
+      'username': '',
+      'email': m['EMAIL'] ?? '',
+      'phoneNumber': m['TEL'] ?? '',
+      'workType': m['TITLE'] ?? '',
+      'workplace': m['ORG'] ?? '',
+      'profileImageUrl': null,
+    };
   }
 
   Future<void> _saveContactToPhone(Map<String, dynamic> userData) async {
@@ -205,7 +234,6 @@ class _ScanQrScreenState extends State<ScanQrScreen>
       final workplace = (userData['workplace'] ?? '').toString();
       final workInfo = (userData['workType'] ?? '').toString();
 
-      // Bina contact menggunakan flutter_contacts API (fc)
       final fc.Contact newContact = fc.Contact(
         name: fc.Name(first: givenName, last: familyName),
         phones: phoneValue.isNotEmpty ? [fc.Phone(phoneValue)] : <fc.Phone>[],
@@ -214,11 +242,10 @@ class _ScanQrScreenState extends State<ScanQrScreen>
             ? [fc.Organization(company: workplace, title: workInfo)]
             : <fc.Organization>[],
         notes: (workplace.isNotEmpty || workInfo.isNotEmpty)
-            ? [fc.Note('${workplace}${workInfo.isNotEmpty ? ' • $workInfo' : ''}')]
+            ? [fc.Note('${workplace}${workInfo.isNotEmpty ? ' • $workInfo' : ''}') ]
             : <fc.Note>[],
       );
 
-      // Masukkan contact ke device
       await newContact.insert();
 
       if (mounted) {
@@ -237,16 +264,15 @@ class _ScanQrScreenState extends State<ScanQrScreen>
     }
   }
 
-  // NOTE: Save to Firestore removed (you wanted this deleted)
-
   void _resetScanner() {
     if (!mounted) return;
     setState(() {
       _scanning = true;
       _loading = false;
     });
-    // Start camera again (tidak menunggu hasil)
-    cameraController.start();
+    try {
+      cameraController.start();
+    } catch (_) {}
   }
 
   Widget _buildScannerTab() {
@@ -270,7 +296,6 @@ class _ScanQrScreenState extends State<ScanQrScreen>
 
     return Stack(
       children: [
-        // gunakan alias ms.MobileScanner
         ms.MobileScanner(
           controller: cameraController,
           onDetect: _handleBarcode,
@@ -313,9 +338,8 @@ class _ScanQrScreenState extends State<ScanQrScreen>
     );
   }
 
-  // Build vCard string from userData for external camera import
+  // Build vCard string from userData for external camera import (My QR tab)
   String _buildVCard(Map<String, dynamic> userData) {
-    // Minimal vCard 3.0
     final fullName = (userData['fullName'] ?? '').toString();
     final parts = fullName.split(' ');
     final family = parts.length > 1 ? parts.sublist(1).join(' ') : '';
@@ -325,7 +349,6 @@ class _ScanQrScreenState extends State<ScanQrScreen>
     final org = (userData['workplace'] ?? '').toString();
     final title = (userData['workType'] ?? '').toString();
 
-    // Escape newline/semicolons/commas if needed (basic)
     String escape(String s) => s.replaceAll('\n', '\\n').replaceAll(';', '\\;').replaceAll(',', '\\,');
 
     final buffer = StringBuffer()
@@ -390,7 +413,7 @@ class _ScanQrScreenState extends State<ScanQrScreen>
                   Text(
                     _qrAsVCard
                         ? 'This QR contains a vCard — phone cameras/Google Lens can offer "Add contact".'
-                        : 'Scan this QR code (app) to add me as a contact in-app',
+                        : 'Scan this QR code (app) to view user details in-app',
                     style: Theme.of(context).textTheme.bodyMedium,
                     textAlign: TextAlign.center,
                   ),
@@ -405,7 +428,6 @@ class _ScanQrScreenState extends State<ScanQrScreen>
             ),
           ),
           const SizedBox(height: 12),
-          // Toggle QR type
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -430,7 +452,7 @@ class _ScanQrScreenState extends State<ScanQrScreen>
                   ),
                   const SizedBox(height: 8),
                   _buildInfoRow('Type', _currentUserData!['workType']),
-                  _buildInfoRow('Unit', _currentUserData!['workUnit']),
+                  _buildInfoRow('Unit', _currentUserData!['workUnit'] ?? _currentUserData!['workTeam']),
                   _buildInfoRow('Workplace', _currentUserData!['workplace']),
                 ],
               ),

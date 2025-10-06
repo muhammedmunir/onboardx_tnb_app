@@ -1,9 +1,9 @@
+// home_screen.dart
 import 'package:curved_navigation_bar/curved_navigation_bar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/svg.dart';
 import 'package:onboardx_tnb_app/screens/auth/login_screen.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:onboardx_tnb_app/screens/buddychat/help_center_screen.dart';
 import 'package:onboardx_tnb_app/screens/document/document_screen.dart';
 import 'package:onboardx_tnb_app/screens/learninghub/learning_hub_screen.dart';
@@ -46,7 +46,6 @@ class _HomeScreenState extends State<HomeScreen> {
     ];
 
     _loadUserData();
-    _loadProjects();
 
     // Check email verification after UI is built
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -61,81 +60,79 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  /// NOTE: Firebase used only for authentication. User profile is from Supabase.
   Future<void> _loadUserData() async {
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) return;
 
-      // Try Firestore first (existing data)
-      DocumentSnapshot userDoc = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .get();
-
-      Map<String, dynamic>? userData;
-      if (userDoc.exists) {
-        userData = userDoc.data() as Map<String, dynamic>?;
-      }
-
-      // Then try Supabase: first try getUserProfile (manage screen style), then fallback to getUser
+      // Get profile from Supabase (this includes profile_image and profile_image_url)
       Map<String, dynamic>? supabaseData;
       try {
         supabaseData = await _supabaseService.getUserProfile(user.uid);
-      } catch (_) {
-        try {
-          supabaseData = await _supabaseService.getUser(user.uid);
-        } catch (e) {
-          // ignore - handled below
-          print('Supabase get user failed: $e');
-        }
+      } catch (e) {
+        print('Supabase get user profile failed in HomeScreen: $e');
       }
+
+      // Debug: log what we received
+      print('HomeScreen: supabaseData => $supabaseData');
 
       if (!mounted) return;
 
-      String? profileImageUrl;
+      final merged = <String, dynamic>{};
 
-      // If supabaseData found, normalize fields and compute public URL when necessary
-      if (supabaseData != null && supabaseData is Map<String, dynamic>) {
-        // Supabase may store profile image as 'profile_image' (path) or 'profile_image_url'
-        final imagePath = supabaseData['profile_image'] ?? supabaseData['profile_image_path'];
-        final imageUrlField = supabaseData['profile_image_url'] ?? supabaseData['profile_image_url'];
+      // Map supabase fields (snake_case) -> camelCase expected in UI
+      if (supabaseData != null) {
+        merged.addAll(supabaseData);
 
-        if (imageUrlField != null && (imageUrlField as String).isNotEmpty) {
-          profileImageUrl = imageUrlField as String;
-        } else if (imagePath != null && (imagePath as String).isNotEmpty) {
-          // Use same bucket name as manage_your_account_screen.dart: 'profile-images'
+        merged['fullName'] = supabaseData['full_name'] ??
+            merged['fullName'] ??
+            supabaseData['username'];
+        merged['email'] = supabaseData['email'] ?? merged['email'];
+        merged['phoneNumber'] =
+            supabaseData['phone_number'] ?? merged['phoneNumber'];
+        // Map work_type -> workType (important fix)
+        merged['workType'] = supabaseData['work_type'] ??
+            supabaseData['workType'] ??
+            merged['workType'];
+        merged['username'] = supabaseData['username'] ?? merged['username'];
+
+        // profile image url already added by getUserProfile as 'profile_image_url'
+        if (supabaseData['profile_image_url'] != null) {
+          merged['profileImageUrl'] = supabaseData['profile_image_url'];
+        } else if (supabaseData['profile_image'] != null) {
           try {
-            final publicUrl = _supabaseService.getPublicUrl('profile-images', imagePath);
-            if (publicUrl is String && publicUrl.isNotEmpty) profileImageUrl = publicUrl;
+            merged['profileImageUrl'] = _supabaseService.getPublicUrl(
+                'profile-images', supabaseData['profile_image']);
           } catch (e) {
-            print('Error building public URL from Supabase: $e');
+            print('Error building public URL in HomeScreen: $e');
           }
         }
       }
 
-      // If still null, try Firestore's profileImageUrl
-      if (profileImageUrl == null && userData != null) {
-        final firestoreImage = userData['profileImageUrl'] as String?;
-        if (firestoreImage != null && firestoreImage.isNotEmpty) {
-          profileImageUrl = firestoreImage;
+      // If user has a team_id, fetch team details to get work_team & work_place
+      try {
+        final teamId = supabaseData?['team_id'];
+        print('HomeScreen: teamId => $teamId');
+        if (teamId != null) {
+          final teamData =
+              await _supabaseService.getTeamByNoTeam(teamId.toString());
+          print('HomeScreen: teamData => $teamData');
+          if (teamData != null) {
+            merged['workTeam'] = teamData['work_team'] ?? merged['workTeam'];
+            merged['workPlace'] = teamData['work_place'] ?? merged['workPlace'];
+          }
+        } else {
+          // fallback if team info stored inside user row
+          merged['workTeam'] = supabaseData?['work_team'] ??
+              supabaseData?['work_unit'] ??
+              merged['workTeam'];
+          merged['workPlace'] =
+              supabaseData?['work_place'] ?? merged['workPlace'];
         }
+      } catch (e) {
+        print('Error loading team info in HomeScreen: $e');
       }
-
-      // Merge data: supabase (if present) overrides firestore
-      final merged = <String, dynamic>{};
-      if (userData != null) merged.addAll(userData);
-      if (supabaseData != null) {
-        // Convert snake_case => camelCase where applicable
-        merged['fullName'] = supabaseData['full_name'] ?? merged['fullName'];
-        merged['email'] = supabaseData['email'] ?? merged['email'];
-        merged['phoneNumber'] = supabaseData['phone_number'] ?? merged['phoneNumber'];
-        merged['workUnit'] = supabaseData['work_unit'] ?? merged['workUnit'];
-        merged['workplace'] = supabaseData['work_place'] ?? merged['workplace'];
-        merged['workType'] = supabaseData['work_type'] ?? merged['workType'];
-        merged['username'] = supabaseData['username'] ?? merged['username'];
-      }
-
-      if (profileImageUrl != null) merged['profileImageUrl'] = profileImageUrl;
 
       setState(() {
         _userData = merged;
@@ -144,25 +141,6 @@ class _HomeScreenState extends State<HomeScreen> {
       print('Loaded user data in HomeScreen: $_userData');
     } catch (e) {
       print('Error loading user data in HomeScreen: $e');
-    }
-  }
-
-  Future<void> _loadProjects() async {
-    try {
-      final projectsData = await _supabaseService.getProjects();
-      if (!mounted) return;
-      if (projectsData != null && projectsData is List<Map<String, dynamic>>) {
-        setState(() => _projects = projectsData);
-      } else if (projectsData != null && projectsData is List) {
-        setState(() {
-          _projects = projectsData.map<Map<String, dynamic>>((e) {
-            if (e is Map<String, dynamic>) return e;
-            return <String, dynamic>{'data': e};
-          }).toList();
-        });
-      }
-    } catch (e) {
-      print('Error loading Supabase projects: $e');
     }
   }
 
@@ -328,71 +306,75 @@ class _HomeContentState extends State<HomeContent> {
     _loadUserData(); // Load data when widget initializes
   }
 
-  // Combined function to load user data from both sources
+  // Combined function to load user data from Supabase only
   Future<void> _loadUserData() async {
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) return;
 
-      // Load from Firestore first
-      DocumentSnapshot userDoc = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .get();
-
-      Map<String, dynamic>? userData;
-      if (userDoc.exists) userData = userDoc.data() as Map<String, dynamic>?;
-
-      // Then load from Supabase and merge
       Map<String, dynamic>? supabaseData;
       try {
         supabaseData = await _supabaseService.getUserProfile(user.uid);
-      } catch (_) {
-        try {
-          supabaseData = await _supabaseService.getUser(user.uid);
-        } catch (e) {
-          print('Supabase get user failed in HomeContent: $e');
-        }
+      } catch (e) {
+        print('Supabase get user failed in HomeContent: $e');
       }
+
+      print('HomeContent: supabaseData => $supabaseData');
 
       if (!mounted) return;
 
       String? profileImageUrl;
 
-      if (supabaseData != null && supabaseData is Map<String, dynamic>) {
-        final imagePath = supabaseData['profile_image'] ?? supabaseData['profile_image_path'];
-        final imageUrlField = supabaseData['profile_image_url'] ?? supabaseData['profile_image_url'];
+      final merged = <String, dynamic>{};
+      if (supabaseData != null) {
+        merged.addAll(supabaseData);
 
-        if (imageUrlField != null && (imageUrlField as String).isNotEmpty) {
-          profileImageUrl = imageUrlField as String;
-        } else if (imagePath != null && (imagePath as String).isNotEmpty) {
+        merged['fullName'] = supabaseData['full_name'] ?? merged['fullName'];
+        merged['email'] = supabaseData['email'] ?? merged['email'];
+        merged['phoneNumber'] =
+            supabaseData['phone_number'] ?? merged['phoneNumber'];
+        merged['username'] = supabaseData['username'] ?? merged['username'];
+        // Map work_type -> workType (important fix)
+        merged['workType'] = supabaseData['work_type'] ??
+            supabaseData['workType'] ??
+            merged['workType'];
+
+        if (supabaseData['profile_image_url'] != null) {
+          profileImageUrl = supabaseData['profile_image_url'];
+        } else if (supabaseData['profile_image'] != null) {
           try {
-            final publicUrl = _supabaseService.getPublicUrl('profile-images', imagePath);
-            if (publicUrl is String && publicUrl.isNotEmpty) profileImageUrl = publicUrl;
+            profileImageUrl = _supabaseService.getPublicUrl(
+                'profile-images', supabaseData['profile_image']);
           } catch (e) {
-            print('Error building public URL from Supabase in HomeContent: $e');
+            print('Error building public URL in HomeContent: $e');
           }
         }
       }
 
-      // If still null, try Firestore's profileImageUrl
-      if (profileImageUrl == null && userData != null) {
-        final firestoreImage = userData['profileImageUrl'] as String?;
-        if (firestoreImage != null && firestoreImage.isNotEmpty) profileImageUrl = firestoreImage;
-      }
-
-      final merged = <String, dynamic>{};
-      if (userData != null) merged.addAll(userData);
-      if (supabaseData != null) {
-        merged['fullName'] = supabaseData['full_name'] ?? merged['fullName'];
-        merged['email'] = supabaseData['email'] ?? merged['email'];
-        merged['phoneNumber'] = supabaseData['phone_number'] ?? merged['phoneNumber'];
-        merged['workUnit'] = supabaseData['work_unit'] ?? merged['workUnit'];
-        merged['workplace'] = supabaseData['work_place'] ?? merged['workplace'];
-        merged['workType'] = supabaseData['work_type'] ?? merged['workType'];
-        merged['username'] = supabaseData['username'] ?? merged['username'];
-      }
       if (profileImageUrl != null) merged['profileImageUrl'] = profileImageUrl;
+
+      // Get team info if available
+      try {
+        final teamId = supabaseData?['team_id'];
+        print('HomeContent: teamId => $teamId');
+        if (teamId != null) {
+          final teamData =
+              await _supabaseService.getTeamByNoTeam(teamId.toString());
+          print('HomeContent: teamData => $teamData');
+          if (teamData != null) {
+            merged['workTeam'] = teamData['work_team'] ?? merged['workTeam'];
+            merged['workPlace'] = teamData['work_place'] ?? merged['workPlace'];
+          }
+        } else {
+          merged['workTeam'] = supabaseData?['work_team'] ??
+              supabaseData?['work_unit'] ??
+              merged['workTeam'];
+          merged['workPlace'] =
+              supabaseData?['work_place'] ?? merged['workPlace'];
+        }
+      } catch (e) {
+        print('Error loading team info in HomeContent: $e');
+      }
 
       setState(() {
         _userData = merged;
@@ -529,19 +511,35 @@ class _HomeContentState extends State<HomeContent> {
                       ),
                       const SizedBox(height: 20),
                       _buildDetailRow(
-                          Icons.person, _userData?['fullName'] ?? "Loading..."),
+                        Icons.person,
+                        _userData?['fullName'] ?? "Loading...",
+                        maxLines: 2, // boleh jadi 2 baris untuk nama panjang
+                      ),
                       const SizedBox(height: 12),
                       _buildDetailRow(
-                          Icons.email, _userData?['email'] ?? "Loading..."),
-                      const SizedBox(height: 12),
-                      _buildDetailRow(Icons.phone,
-                          _userData?['phoneNumber'] ?? "Loading..."),
-                      const SizedBox(height: 12),
-                      _buildDetailRow(Icons.business,
-                          "${_userData?['workUnit'] ?? "Loading"} | ${_userData?['workplace'] ?? "Loading"}"),
+                        Icons.email,
+                        _userData?['email'] ?? "Loading...",
+                        maxLines: 2,
+                      ),
                       const SizedBox(height: 12),
                       _buildDetailRow(
-                          Icons.work, _userData?['workType'] ?? "Loading..."),
+                        Icons.phone,
+                        _userData?['phoneNumber'] ?? "Loading...",
+                      ),
+                      const SizedBox(height: 12),
+                      // WorkTeam | WorkPlace: benarkan 2 baris dan gunakan center-left styling sedikit
+                      _buildDetailRow(
+                        Icons.business,
+                        "${_userData?['workTeam'] ?? "Loading"} | ${_userData?['workPlace'] ?? "Loading"}",
+                        maxLines: 2,
+                        align: TextAlign.center,
+                      ),
+                      const SizedBox(height: 12),
+                      _buildDetailRow(
+                        Icons.work,
+                        _userData?['workType'] ?? "Loading...",
+                        maxLines: 2,
+                      ),
                       const SizedBox(height: 12),
                       const Icon(
                         Icons.keyboard_arrow_up,
@@ -590,7 +588,9 @@ class _HomeContentState extends State<HomeContent> {
                             style: TextStyle(fontSize: 18, color: Colors.white),
                           ),
                           Text(
-                            _userData?['username'] ?? _userData?['fullName'] ?? "Loading...",
+                            _userData?['username'] ??
+                                _userData?['fullName'] ??
+                                "Loading...",
                             style: const TextStyle(
                               fontSize: 22,
                               fontWeight: FontWeight.bold,
@@ -619,7 +619,8 @@ class _HomeContentState extends State<HomeContent> {
   }
 
   // Widget untuk CircleAvatar dengan profile image
-  Widget _buildProfileAvatar({required double radius, required double iconSize}) {
+  Widget _buildProfileAvatar(
+      {required double radius, required double iconSize}) {
     final String? profileImageUrl = _userData?['profileImageUrl'] as String?;
 
     if (profileImageUrl != null && profileImageUrl.isNotEmpty) {
@@ -643,24 +644,33 @@ class _HomeContentState extends State<HomeContent> {
   }
 
   // Widget untuk baris detail (di expanded state)
-  Widget _buildDetailRow(IconData icon, String text) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Icon(icon, color: Colors.white, size: 20),
-        const SizedBox(width: 10),
-        Flexible(
-          child: Text(
-            text,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 16,
+  // Updated: support multiline and alignment
+  Widget _buildDetailRow(IconData icon, String text,
+      {int maxLines = 1, TextAlign align = TextAlign.center}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6.0),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: Colors.white, size: 20),
+          const SizedBox(width: 10),
+          // Use Expanded so text takes remaining width and wraps nicely
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+              ),
+              textAlign: align,
+              maxLines: maxLines,
+              overflow: TextOverflow.ellipsis,
+              softWrap: true,
             ),
-            textAlign: TextAlign.center,
-            overflow: TextOverflow.ellipsis,
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -977,10 +987,7 @@ class _HomeContentState extends State<HomeContent> {
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(15),
                       gradient: const LinearGradient(
-                        colors: [
-                          Colors.black87,
-                          Colors.transparent
-                        ],
+                        colors: [Colors.black87, Colors.transparent],
                         begin: Alignment.bottomCenter,
                         end: Alignment.center,
                       ),
