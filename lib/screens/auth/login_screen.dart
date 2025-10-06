@@ -37,6 +37,7 @@ class _LoginScreenState extends State<LoginScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _checkEmailVerificationOnStart();
       await _evaluateBiometricAvailability();
       await _tryAutoBiometricLogin();
     });
@@ -54,33 +55,27 @@ class _LoginScreenState extends State<LoginScreen> {
       final localAuthProv =
           Provider.of<LocalAuthenticationProvider>(context, listen: false);
       final prefs = await SharedPreferences.getInstance();
-
-      // Check basic biometric availability
       final canCheck = await localAuthProv.checkBiometricAvailability();
       final bioEnabled = prefs.getBool(_kBiometricEnabledKey) ?? false;
 
-      // Get available biometrics
+      // Also check available biometrics and saved credentials
       final available = await localAuthProv.getAvailableBiometrics();
       final savedEmail = await _secureStorage.read(key: _kSavedEmailKey) ?? '';
       final savedPassword =
           await _secureStorage.read(key: _kSavedPasswordKey) ?? '';
 
       debugPrint(
-          'Biometric Evaluation -> canCheck: $canCheck, bioEnabled: $bioEnabled, available: $available, savedEmail: ${savedEmail.isNotEmpty}');
+          'evaluateBiometricAvailability -> canCheck: $canCheck, bioEnabled: $bioEnabled, available: $available, savedEmail: ${savedEmail.isNotEmpty}');
 
-      // Show biometric button if:
-      // 1. Device can check biometrics
-      // 2. Biometric is enabled in settings
-      // 3. There are available biometric methods OR device supports biometrics
-      // 4. Saved credentials exist
       setState(() {
         _showBiometricButton = canCheck &&
             bioEnabled &&
-            (available.isNotEmpty || canCheck) &&
+            available.isNotEmpty &&
             savedEmail.isNotEmpty &&
             savedPassword.isNotEmpty;
       });
     } catch (e) {
+      // if something fails, just hide biometric button
       debugPrint('evaluateBiometricAvailability error -> $e');
       setState(() {
         _showBiometricButton = false;
@@ -89,58 +84,48 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _tryAutoBiometricLogin() async {
+    final localAuthProv =
+        Provider.of<LocalAuthenticationProvider>(context, listen: false);
+    final prefs = await SharedPreferences.getInstance();
+
+    final bool bioEnabled = prefs.getBool(_kBiometricEnabledKey) ?? false;
+    if (!bioEnabled) {
+      debugPrint('_tryAutoBiometricLogin -> biometric not enabled in prefs');
+      return;
+    }
+
+    final canCheck = await localAuthProv.checkBiometricAvailability();
+    if (!canCheck) {
+      debugPrint('_tryAutoBiometricLogin -> device cannot check biometrics');
+      return;
+    }
+
+    // Baca credentials dari secure storage
+    String savedEmail = '';
+    String savedPassword = '';
     try {
-      final localAuthProv =
-          Provider.of<LocalAuthenticationProvider>(context, listen: false);
-      final prefs = await SharedPreferences.getInstance();
+      savedEmail = await _secureStorage.read(key: _kSavedEmailKey) ?? '';
+      savedPassword = await _secureStorage.read(key: _kSavedPasswordKey) ?? '';
+    } catch (e) {
+      // ignore read error, fallback
+      debugPrint('_tryAutoBiometricLogin read secure storage error -> $e');
+    }
 
-      final bool bioEnabled = prefs.getBool(_kBiometricEnabledKey) ?? false;
-      if (!bioEnabled) {
-        debugPrint('_tryAutoBiometricLogin -> biometric not enabled in prefs');
-        return;
-      }
-
-      final canCheck = await localAuthProv.checkBiometricAvailability();
-      if (!canCheck) {
-        debugPrint('_tryAutoBiometricLogin -> device cannot check biometrics');
-        return;
-      }
-
-      // Baca credentials dari secure storage
-      String savedEmail = '';
-      String savedPassword = '';
-      try {
-        savedEmail = await _secureStorage.read(key: _kSavedEmailKey) ?? '';
-        savedPassword =
-            await _secureStorage.read(key: _kSavedPasswordKey) ?? '';
-      } catch (e) {
-        debugPrint('_tryAutoBiometricLogin read secure storage error -> $e');
-        return; // Return early if cannot read credentials
-      }
-
-      if (savedEmail.isEmpty || savedPassword.isEmpty) {
-        debugPrint('_tryAutoBiometricLogin -> no saved credentials found');
-        return;
-      }
-
+    if (savedEmail.isNotEmpty && savedPassword.isNotEmpty) {
       final result = await localAuthProv.authenticateWithBiometricsDetailed(
         localizedReason: 'Authenticate to sign in with saved credentials',
       );
-
       debugPrint('Auto biometric login authenticate result: $result');
-
       if (result['success'] == true) {
-        if (!mounted) return;
-
         setState(() {
           _isLoading = true;
         });
-
         try {
           User? user =
               await _authService.signInWithEmail(savedEmail, savedPassword);
           if (user != null) {
             if (user.emailVerified) {
+              // set loginStatus only after successful login
               await prefs.setBool(_kLoginStatusKey, true);
 
               if (mounted) {
@@ -149,9 +134,11 @@ class _LoginScreenState extends State<LoginScreen> {
                 );
               }
             } else {
-              _showVerificationDialog(context, user);
+              // jika belum verify, paparkan dialog sama seperti normal flow
+              if (mounted) _showVerificationDialog(context, user);
             }
           } else {
+            // gagal login — beri notifikasi
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
@@ -164,10 +151,7 @@ class _LoginScreenState extends State<LoginScreen> {
         } catch (e) {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('Auto login error: ${e.toString()}'),
-                backgroundColor: Colors.red,
-              ),
+              SnackBar(content: Text('Auto login error: ${e.toString()}')),
             );
           }
         } finally {
@@ -178,11 +162,18 @@ class _LoginScreenState extends State<LoginScreen> {
           }
         }
       } else {
-        // Jangan tampilkan error untuk auto login, karena ini background process
-        debugPrint('Auto biometric auth failed: ${result['message']}');
+        // show message why failed
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+                content:
+                    Text('Auto biometric auth failed: ${result['message']}'),
+                backgroundColor: Colors.red),
+          );
+        }
       }
-    } catch (e) {
-      debugPrint('_tryAutoBiometricLogin overall error: $e');
+    } else {
+      debugPrint('_tryAutoBiometricLogin -> no saved credentials found');
     }
   }
 
@@ -204,7 +195,7 @@ class _LoginScreenState extends State<LoginScreen> {
       );
 
       if (user != null) {
-        // Check if email is verified
+        // Check if email is verified - INI YANG PENTING!
         if (user.emailVerified) {
           // selepas berjaya login, tanya user nak enable biometric?
           await _offerEnableBiometricIfAvailable(
@@ -221,8 +212,16 @@ class _LoginScreenState extends State<LoginScreen> {
             );
           }
         } else {
-          // Email not verified - show verification dialog
+          // Email not verified - TAMPILKAN DIALOG DAN JANGAN IZIN MASUK
           _showVerificationDialog(context, user);
+
+          // SIGN OUT USER karena email belum terverifikasi
+          await _authService.signOut();
+
+          setState(() {
+            _isLoading = false;
+          });
+          return; // Berhenti di sini, jangan lanjutkan
         }
       } else {
         // Login failed
@@ -265,6 +264,15 @@ class _LoginScreenState extends State<LoginScreen> {
       });
       // re-evaluate biometric button (in case user just enabled biometric)
       await _evaluateBiometricAvailability();
+    }
+  }
+
+  Future<void> _checkEmailVerificationOnStart() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null && !user.emailVerified) {
+      await _authService.signOut();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kLoginStatusKey, false);
     }
   }
 
@@ -721,7 +729,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                   : Row(
                                       children: [
                                         Expanded(
-                                          flex: _showBiometricButton ? 5 : 1,
+                                          flex: 5,
                                           child: ElevatedButton(
                                             onPressed: _login,
                                             style: ElevatedButton.styleFrom(
@@ -742,31 +750,35 @@ class _LoginScreenState extends State<LoginScreen> {
                                             ),
                                           ),
                                         ),
+                                        const SizedBox(width: 12),
                                         // Biometric button - hanya ditunjuk bila sesuai
-                                        if (_showBiometricButton) ...[
-                                          const SizedBox(width: 12),
-                                          Container(
-                                            width: 56,
-                                            height: 48,
-                                            child: ElevatedButton(
-                                              onPressed: _fingerPrintLogin,
-                                              style: ElevatedButton.styleFrom(
-                                                backgroundColor: primaryColor,
-                                                padding: EdgeInsets.zero,
-                                                shape: RoundedRectangleBorder(
-                                                  borderRadius:
-                                                      BorderRadius.circular(12),
+                                        _showBiometricButton
+                                            ? Container(
+                                                width: 56,
+                                                height: 48,
+                                                child: ElevatedButton(
+                                                  onPressed: _fingerPrintLogin,
+                                                  style:
+                                                      ElevatedButton.styleFrom(
+                                                    backgroundColor:
+                                                        primaryColor,
+                                                    padding: EdgeInsets.zero,
+                                                    shape:
+                                                        RoundedRectangleBorder(
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                              12),
+                                                    ),
+                                                    elevation: 4,
+                                                  ),
+                                                  child: Icon(
+                                                    Icons.fingerprint,
+                                                    size: 26,
+                                                    color: Colors.white,
+                                                  ),
                                                 ),
-                                                elevation: 4,
-                                              ),
-                                              child: const Icon(
-                                                Icons.fingerprint,
-                                                size: 26,
-                                                color: Colors.white,
-                                              ),
-                                            ),
-                                          ),
-                                        ],
+                                              )
+                                            : const SizedBox(width: 0),
                                       ],
                                     ),
 

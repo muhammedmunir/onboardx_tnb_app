@@ -1,4 +1,3 @@
-// home_screen.dart
 import 'package:curved_navigation_bar/curved_navigation_bar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/svg.dart';
@@ -149,8 +148,18 @@ class _HomeScreenState extends State<HomeScreen> {
       User? user = FirebaseAuth.instance.currentUser;
 
       if (user != null && !user.emailVerified) {
+        // JIKA EMAIL BELUM DIVERIFIKASI, LOGOUT DAN KE LOGIN SCREEN
         if (!mounted) return;
+
+        // Tampilkan dialog informasi
         _showVerificationDialog(context, user);
+
+        // Tunggu sebentar lalu logout dan redirect ke login
+        Future.delayed(const Duration(seconds: 2), () async {
+          await _signOut();
+        });
+
+        return;
       }
 
       if (!mounted) return;
@@ -184,6 +193,8 @@ class _HomeScreenState extends State<HomeScreen> {
               onPressed: () {
                 if (!mounted) return;
                 Navigator.of(dialogContext).pop();
+                // Setelah dialog ditutup, logout dan redirect ke login
+                _signOut();
               },
             ),
             TextButton(
@@ -199,6 +210,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   );
                   Navigator.of(dialogContext).pop();
+                  // Tetap logout setelah mengirim ulang verifikasi
+                  _signOut();
                 } catch (e) {
                   if (!mounted) return;
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -208,13 +221,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   );
                 }
-              },
-            ),
-            TextButton(
-              child: const Text('Logout'),
-              onPressed: () async {
-                Navigator.of(dialogContext).pop();
-                await _signOut();
               },
             ),
           ],

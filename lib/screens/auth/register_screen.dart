@@ -140,7 +140,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         // Clear all fields after successful registration
         _clearAllFields();
 
-        // Show verification dialog
+        // Show verification dialog and navigate to login
         _showVerificationDialog(context);
       } else {
         // Registration failed
@@ -181,11 +181,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
               child: const Text('OK'),
               onPressed: () {
                 Navigator.of(context).pop();
-                Navigator.pushReplacement(
+                // Navigate langsung ke LoginScreen, bukan HomeScreen
+                Navigator.pushAndRemoveUntil(
                   context,
                   MaterialPageRoute(
                     builder: (context) => const LoginScreen(),
                   ),
+                  (route) => false, // Hapus semua route sebelumnya
                 );
               },
             ),
