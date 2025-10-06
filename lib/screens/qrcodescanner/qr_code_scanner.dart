@@ -1,5 +1,5 @@
-// lib/screens/scan_qr_screen.dart
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 // alias mobile_scanner sebagai ms
 import 'package:mobile_scanner/mobile_scanner.dart' as ms;
@@ -107,6 +107,36 @@ class _ScanQrScreenState extends State<ScanQrScreen>
     }
   }
 
+  void _showGenericQrDialog(String data) {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('QR Code Content'),
+          content: Text(data),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: data));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Copied to clipboard')),
+                );
+              },
+              child: const Text('Copy'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                _resetScanner();
+              },
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   Future<void> _onScanDetected({
     String? scannedUid,
     required bool isVCard,
@@ -143,12 +173,7 @@ class _ScanQrScreenState extends State<ScanQrScreen>
         // fetch from supabase using uid
         final profile = await _supabase.getUserProfileForApp(scannedUid!);
         if (profile == null) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('User not found')),
-            );
-          }
-          _resetScanner();
+          _showGenericQrDialog(scannedUid);
           return;
         }
 

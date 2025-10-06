@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 class UserProfileDetailScreen extends StatelessWidget {
-  const UserProfileDetailScreen({super.key});
+  final Map<String, dynamic> userData;
+
+  const UserProfileDetailScreen({super.key, required this.userData});
 
   // Function to launch email
   _launchEmail(String email) async {
@@ -54,6 +56,12 @@ class UserProfileDetailScreen extends StatelessWidget {
     final Color textColor = Theme.of(context).colorScheme.onBackground;
     final Color dividerColor = isDarkMode ? Colors.grey[700]! : Colors.grey[300]!;
 
+    final String fullName = userData['fullName'] ?? 'N/A';
+    final String position = userData['workType'] ?? 'N/A';
+    final String email = userData['email'] ?? 'N/A';
+    final String phone = userData['phoneNumber'] ?? 'N/A';
+    final String? profileImageUrl = userData['profileImageUrl'];
+
     return Scaffold(
       backgroundColor: scaffoldBackground,
       appBar: AppBar(
@@ -102,15 +110,18 @@ class UserProfileDetailScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 20),
-            const Center(
+            Center(
               child: CircleAvatar(
                 radius: 50,
-                backgroundColor: Color.fromRGBO(224, 124, 124, 1),
-                child: Icon(
-                  Icons.person,
-                  size: 50,
-                  color: Colors.white,
-                ),
+                backgroundColor: const Color.fromRGBO(224, 124, 124, 1),
+                backgroundImage: (profileImageUrl != null && profileImageUrl.isNotEmpty) ? NetworkImage(profileImageUrl) : null,
+                child: (profileImageUrl == null || profileImageUrl.isEmpty)
+                    ? const Icon(
+                        Icons.person,
+                        size: 50,
+                        color: Colors.white,
+                      )
+                    : null,
               ),
             ),
             const SizedBox(height: 30),
@@ -118,7 +129,7 @@ class UserProfileDetailScreen extends StatelessWidget {
             // Name Section
             _buildProfileSection(
               title: 'Name',
-              content: 'Datuk Ir. Megat Jalaluddin Bin Megat Hassan',
+              content: fullName,
               isDarkMode: isDarkMode,
               textColor: textColor,
             ),
@@ -126,7 +137,7 @@ class UserProfileDetailScreen extends StatelessWidget {
             // Position Section
             _buildProfileSection(
               title: 'Position',
-              content: 'President/Ketua Pegawai Eksekutif (CEO)',
+              content: position,
               isDarkMode: isDarkMode,
               textColor: textColor,
             ),
@@ -134,7 +145,7 @@ class UserProfileDetailScreen extends StatelessWidget {
             // Email Section
             _buildEmailSection(
               title: 'Email',
-              content: 'Ceo@tnb.com.my',
+              content: email,
               isDarkMode: isDarkMode,
               textColor: textColor,
               dividerColor: dividerColor,
@@ -143,7 +154,7 @@ class UserProfileDetailScreen extends StatelessWidget {
             // Phone Section
             _buildPhoneSection(
               title: 'Phone',
-              content: '+60 00000000000',
+              content: phone,
               isDarkMode: isDarkMode,
               textColor: textColor,
               dividerColor: dividerColor,

@@ -139,7 +139,12 @@ class AuthWrapper extends StatelessWidget {
 
           User? user = snapshot.data;
           if (user != null) {
-            return const HomeScreen();
+            if (user.emailVerified) {
+              return const HomeScreen();
+            } else {
+              // User is signed in but email is not verified
+              return const LoginScreen();
+            }
           }
           return const LoginScreen();
         }

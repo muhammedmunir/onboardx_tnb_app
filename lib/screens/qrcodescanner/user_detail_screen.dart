@@ -1,29 +1,9 @@
-// lib/screens/user_detail_screen.dart
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:onboardx_tnb_app/screens/meettheteam/user_profile_detail_screen.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_contacts/flutter_contacts.dart' as fc;
-
-// Sesuaikan path Supabase import jika anda perlukan operasi khas (contoh: untuk follow/send request)
-// import '../supabase.dart';
-
-/// UserDetailScreen
-/// - Menerima `userData` sebagai Map<String, dynamic>
-/// - `isVCard` menunjukkan data ini datang dari QR vCard (true) atau dari app (false)
-///
-/// Contoh `userData` yang dijangka (camelCase):
-/// {
-///   'uid': '...', // nullable
-///   'fullName': 'Muhammed Munir',
-///   'username': 'mmunir',
-///   'email': 'email@example.com',
-///   'phoneNumber': '+60123456789',
-///   'workType': 'Engineer',
-///   'workUnit': 'Team 1',
-///   'workTeam': 'Team 1',
-///   'workplace': 'HQ',
-///   'profileImageUrl': 'https://...',
-/// }
+import 'package:share_plus/share_plus.dart';
 
 class UserDetailScreen extends StatefulWidget {
   final Map<String, dynamic> userData;
@@ -128,11 +108,12 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       return;
     }
 
-    // TODO: navigate to your in-app user profile route
-    // Example:
-    // Navigator.pushNamed(context, '/profile', arguments: {'uid': uid});
-
-    _showSnack('Open in-app profile (implement navigation)');
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => UserProfileDetailScreen(userData: widget.userData),
+      ),
+    );
   }
 
   @override
@@ -307,12 +288,9 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
               leading: const Icon(Icons.share),
               title: const Text('Share Contact'),
               subtitle: const Text('Share vCard text or simple info'),
-              onTap: () async {
+              onTap: () {
                 final plain = _buildPlainText();
-                // Use system share via method channel or share_plus package
-                // For minimal example, copy to clipboard and ask user to paste
-                await _copyToClipboard(plain, 'Contact');
-                _showSnack('Contact copied. Use share to paste elsewhere.');
+                Share.share(plain, subject: 'Contact: $_fullName');
               },
             ),
             ListTile(
