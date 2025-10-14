@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -782,7 +783,7 @@ class SupabaseService {
     );
   }
 
-// Add this method to your SupabaseService class
+  // Add this method to your SupabaseService class
   Future<void> updateLearningProgress({
     required String userId,
     required int learningId,
@@ -803,5 +804,113 @@ class SupabaseService {
       print('❌ Failed to update learning progress: $e');
       throw Exception('Failed to update learning progress: $e');
     }
+  }
+
+   // Get events for a user
+  Future<List<Map<String, dynamic>>> getEvents(String userId) async {
+    try {
+      final response = await client
+          .from('events')
+          .select()
+          .eq('user_id', userId)
+          .order('date', ascending: true);
+      
+      return response;
+    } catch (e) {
+      print('❌ Failed to get events: $e');
+      throw Exception('Failed to get events: $e');
+    }
+  }
+
+  // Stream events for real-time updates
+  Stream<List<Map<String, dynamic>>> getEventsStream(String userId) {
+    try {
+      return client
+          .from('events')
+          .stream(primaryKey: ['id'])
+          .eq('user_id', userId)
+          .order('date', ascending: true);
+    } catch (e) {
+      print('❌ Error creating events stream: $e');
+      // Return empty stream as fallback
+      return const Stream.empty();
+    }
+  }
+
+  // Add new event
+  Future<Map<String, dynamic>> addEvent(Map<String, dynamic> eventData) async {
+    try {
+      final response = await client
+          .from('events')
+          .insert(eventData)
+          .select()
+          .single();
+      
+      print('✅ Event added successfully: ${response['id']}');
+      return response;
+    } catch (e) {
+      print('❌ Failed to add event: $e');
+      throw Exception('Failed to add event: $e');
+    }
+  }
+
+  // Update event
+  Future<void> updateEvent(String eventId, Map<String, dynamic> updates) async {
+    try {
+      await client
+          .from('events')
+          .update(updates)
+          .eq('id', eventId);
+      
+      print('✅ Event updated successfully: $eventId');
+    } catch (e) {
+      print('❌ Failed to update event: $e');
+      throw Exception('Failed to update event: $e');
+    }
+  }
+
+  // Delete event
+  Future<void> deleteEvent(String eventId) async {
+    try {
+      await client
+          .from('events')
+          .delete()
+          .eq('id', eventId);
+      
+      print('✅ Event deleted successfully: $eventId');
+    } catch (e) {
+      print('❌ Failed to delete event: $e');
+      throw Exception('Failed to delete event: $e');
+    }
+  }
+
+  // Manual refresh dengan polling (fallback)
+  Stream<List<Map<String, dynamic>>> getEventsStreamWithPolling(String userId) {
+    final controller = StreamController<List<Map<String, dynamic>>>();
+    
+    // Initial load
+    getEvents(userId).then((events) {
+      if (!controller.isClosed) controller.add(events);
+    });
+    
+    // Periodic refresh setiap 3 detik
+    final timer = Timer.periodic(const Duration(seconds: 3), (_) async {
+      if (!controller.isClosed) {
+        try {
+          final events = await getEvents(userId);
+          controller.add(events);
+        } catch (e) {
+          print('Error in periodic events refresh: $e');
+        }
+      }
+    });
+    
+    // Cleanup
+    controller.onCancel = () {
+      timer.cancel();
+      controller.close();
+    };
+    
+    return controller.stream;
   }
 }

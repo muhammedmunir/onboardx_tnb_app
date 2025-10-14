@@ -11,6 +11,7 @@ import 'package:permission_handler/permission_handler.dart';
 
 // alias flutter_contacts sebagai fc
 import 'package:flutter_contacts/flutter_contacts.dart' as fc;
+import 'package:url_launcher/url_launcher.dart';
 
 // IMPORTANT: sesuaikan path import berikut ikut struktur projek anda:
 import 'user_detail_screen.dart'; // <-- pastikan UserDetailScreen wujud dan menerima userData & isVCard
@@ -24,7 +25,8 @@ class ScanQrScreen extends StatefulWidget {
 
 class _ScanQrScreenState extends State<ScanQrScreen>
     with SingleTickerProviderStateMixin {
-  final ms.MobileScannerController cameraController = ms.MobileScannerController();
+  final ms.MobileScannerController cameraController =
+      ms.MobileScannerController();
   bool _scanning = true;
   bool _loading = false;
   bool _cameraPermissionGranted = false;
@@ -86,25 +88,44 @@ class _ScanQrScreenState extends State<ScanQrScreen>
     if (raw == null || raw.isEmpty) return;
 
     // If raw contains vCard text
-    final isVCard = raw.trim().toUpperCase().startsWith('BEGIN:VCARD');
+    final rawUpper = raw.trim().toUpperCase();
+    final isVCard = rawUpper.startsWith('BEGIN:VCARD');
+    final isUrl =
+        rawUpper.startsWith('HTTP://') || rawUpper.startsWith('HTTPS://');
 
-    // If it's an app QR (we expect uid) — otherwise treat as vCard / external QR
-    if (!isVCard) {
-      // assume app QR contains uid (string)
-      final scannedUid = raw;
-      if (scannedUid == _auth.currentUser?.uid) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("You can't scan your own QR code")),
-          );
-        }
-        return;
-      }
-      _onScanDetected(scannedUid: scannedUid, isVCard: false, rawVCard: null);
-    } else {
+    // Stop camera to prevent re-scanning
+    setState(() => _scanning = false);
+    cameraController.stop();
+
+    if (isVCard) {
       // vCard scanned
-      _onScanDetected(scannedUid: null, isVCard: true, rawVCard: raw);
+      _onScanDetected(
+          scannedUid: null, isVCard: true, rawVCard: raw, isUrl: false);
+    } else if (isUrl) {
+      _onScanDetected(
+          scannedUid: null, isVCard: false, rawVCard: raw, isUrl: true);
+    } else {
+      // Could be an app UID or just generic text.
+      // We will try to treat it as a UID first.
+      _onScanDetected(
+          scannedUid: raw, isVCard: false, rawVCard: null, isUrl: false);
     }
+  }
+
+  // Helper to launch URL
+  Future<void> _launchURL(String url) async {
+    final uri = Uri.parse(url);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not launch $url')),
+        );
+      }
+    }
+    // After attempting to launch, reset the scanner
+    _resetScanner();
   }
 
   void _showGenericQrDialog(String data) {
@@ -141,6 +162,7 @@ class _ScanQrScreenState extends State<ScanQrScreen>
     String? scannedUid,
     required bool isVCard,
     String? rawVCard,
+    required bool isUrl,
   }) async {
     if (!_scanning) return;
 
@@ -156,6 +178,12 @@ class _ScanQrScreenState extends State<ScanQrScreen>
 
     try {
       Map<String, dynamic>? userData;
+
+      if (isUrl) {
+        await _launchURL(rawVCard!);
+        return; // _launchURL will call _resetScanner
+      }
+
       if (isVCard) {
         userData = _parseVCard(rawVCard ?? '');
         userData['uid'] = null;
@@ -163,7 +191,8 @@ class _ScanQrScreenState extends State<ScanQrScreen>
         await Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (_) => UserDetailScreen(userData: userData!, isVCard: true),
+            builder: (_) =>
+                UserDetailScreen(userData: userData!, isVCard: true),
           ),
         );
         // when returning, reset scanner
@@ -173,6 +202,7 @@ class _ScanQrScreenState extends State<ScanQrScreen>
         // fetch from supabase using uid
         final profile = await _supabase.getUserProfileForApp(scannedUid!);
         if (profile == null) {
+          // Not a valid app user, so show as generic text
           _showGenericQrDialog(scannedUid);
           return;
         }
@@ -183,7 +213,8 @@ class _ScanQrScreenState extends State<ScanQrScreen>
         await Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (_) => UserDetailScreen(userData: userData!, isVCard: false),
+            builder: (_) =>
+                UserDetailScreen(userData: userData!, isVCard: false),
           ),
         );
 
@@ -222,7 +253,8 @@ class _ScanQrScreenState extends State<ScanQrScreen>
     String fullName = m['FN'] ?? '';
     if (fullName.isEmpty && m['N'] != null) {
       final parts = m['N']!.split(';');
-      fullName = ((parts.length > 1 ? parts[1] : '') + ' ' + (parts[0] ?? '')).trim();
+      fullName =
+          ((parts.length > 1 ? parts[1] : '') + ' ' + (parts[0] ?? '')).trim();
     }
 
     return {
@@ -267,7 +299,10 @@ class _ScanQrScreenState extends State<ScanQrScreen>
             ? [fc.Organization(company: workplace, title: workInfo)]
             : <fc.Organization>[],
         notes: (workplace.isNotEmpty || workInfo.isNotEmpty)
-            ? [fc.Note('${workplace}${workInfo.isNotEmpty ? ' • $workInfo' : ''}') ]
+            ? [
+                fc.Note(
+                    '${workplace}${workInfo.isNotEmpty ? ' • $workInfo' : ''}')
+              ]
             : <fc.Note>[],
       );
 
@@ -374,7 +409,8 @@ class _ScanQrScreenState extends State<ScanQrScreen>
     final org = (userData['workplace'] ?? '').toString();
     final title = (userData['workType'] ?? '').toString();
 
-    String escape(String s) => s.replaceAll('\n', '\\n').replaceAll(';', '\\;').replaceAll(',', '\\,');
+    String escape(String s) =>
+        s.replaceAll('\n', '\\n').replaceAll(';', '\\;').replaceAll(',', '\\,');
 
     final buffer = StringBuffer()
       ..writeln('BEGIN:VCARD')
@@ -382,7 +418,8 @@ class _ScanQrScreenState extends State<ScanQrScreen>
       ..writeln('N:${escape(family)};${escape(given)};;;')
       ..writeln('FN:${escape(fullName)}');
     if (tel.isNotEmpty) buffer.writeln('TEL;TYPE=CELL:${escape(tel)}');
-    if (email.isNotEmpty) buffer.writeln('EMAIL;TYPE=INTERNET:${escape(email)}');
+    if (email.isNotEmpty)
+      buffer.writeln('EMAIL;TYPE=INTERNET:${escape(email)}');
     if (org.isNotEmpty) buffer.writeln('ORG:${escape(org)}');
     if (title.isNotEmpty) buffer.writeln('TITLE:${escape(title)}');
     buffer.writeln('END:VCARD');
@@ -412,7 +449,8 @@ class _ScanQrScreenState extends State<ScanQrScreen>
               child: Column(
                 children: [
                   if (_currentUserData!['profileImageUrl'] != null &&
-                      (_currentUserData!['profileImageUrl'] as String).isNotEmpty)
+                      (_currentUserData!['profileImageUrl'] as String)
+                          .isNotEmpty)
                     CircleAvatar(
                       radius: 50,
                       backgroundImage:
@@ -477,7 +515,10 @@ class _ScanQrScreenState extends State<ScanQrScreen>
                   ),
                   const SizedBox(height: 8),
                   _buildInfoRow('Type', _currentUserData!['workType']),
-                  _buildInfoRow('Unit', _currentUserData!['workUnit'] ?? _currentUserData!['workTeam']),
+                  _buildInfoRow(
+                      'Unit',
+                      _currentUserData!['workUnit'] ??
+                          _currentUserData!['workTeam']),
                   _buildInfoRow('Workplace', _currentUserData!['workplace']),
                 ],
               ),

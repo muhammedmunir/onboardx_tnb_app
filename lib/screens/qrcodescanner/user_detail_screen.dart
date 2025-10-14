@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:onboardx_tnb_app/screens/meettheteam/user_profile_detail_screen.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_contacts/flutter_contacts.dart' as fc;
 import 'package:share_plus/share_plus.dart';
@@ -9,7 +8,9 @@ class UserDetailScreen extends StatefulWidget {
   final Map<String, dynamic> userData;
   final bool isVCard;
 
-  const UserDetailScreen({Key? key, required this.userData, this.isVCard = false}) : super(key: key);
+  const UserDetailScreen(
+      {Key? key, required this.userData, this.isVCard = false})
+      : super(key: key);
 
   @override
   State<UserDetailScreen> createState() => _UserDetailScreenState();
@@ -23,7 +24,9 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   String get _email => (widget.userData['email'] ?? '').toString();
   String get _phone => (widget.userData['phoneNumber'] ?? '').toString();
   String get _workType => (widget.userData['workType'] ?? '').toString();
-  String get _workUnit => (widget.userData['workUnit'] ?? widget.userData['workTeam'] ?? '').toString();
+  String get _workUnit =>
+      (widget.userData['workUnit'] ?? widget.userData['workTeam'] ?? '')
+          .toString();
   String get _workplace => (widget.userData['workplace'] ?? '').toString();
   String? get _profileImageUrl => widget.userData['profileImageUrl'] as String?;
 
@@ -86,7 +89,10 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
             ? [fc.Organization(company: _workplace, title: _workType)]
             : <fc.Organization>[],
         notes: (_workplace.isNotEmpty || _workType.isNotEmpty)
-            ? [fc.Note('${_workplace}${_workType.isNotEmpty ? ' • $_workType' : ''}')]
+            ? [
+                fc.Note(
+                    '${_workplace}${_workType.isNotEmpty ? ' • $_workType' : ''}')
+              ]
             : <fc.Note>[],
       );
 
@@ -98,22 +104,6 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     } finally {
       if (mounted) setState(() => _savingContact = false);
     }
-  }
-
-  // Optional: open a route to view user in app if uid present
-  void _openInAppProfile() {
-    final uid = widget.userData['uid'];
-    if (uid == null || uid.toString().isEmpty) {
-      _showSnack('No in-app profile available');
-      return;
-    }
-
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => UserProfileDetailScreen(userData: widget.userData),
-      ),
-    );
   }
 
   @override
@@ -163,7 +153,8 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
                   const SizedBox(height: 6),
                   Text(
                     _username.isNotEmpty ? '@$_username' : '',
-                    style: theme.textTheme.bodyMedium?.copyWith(color: Colors.grey[700]),
+                    style: theme.textTheme.bodyMedium
+                        ?.copyWith(color: Colors.grey[700]),
                   ),
                   const SizedBox(height: 8),
                   if (_workUnit.isNotEmpty || _workplace.isNotEmpty)
@@ -190,7 +181,12 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
 
     // fallback: initials
     final initials = _fullName.isNotEmpty
-        ? _fullName.trim().split(' ').map((s) => s.isNotEmpty ? s[0] : '').join().toUpperCase()
+        ? _fullName
+            .trim()
+            .split(' ')
+            .map((s) => s.isNotEmpty ? s[0] : '')
+            .join()
+            .toUpperCase()
         : '';
 
     return CircleAvatar(
@@ -207,18 +203,41 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _infoRow(icon: Icons.phone, label: 'Phone', value: _phone, onTap: _phone.isNotEmpty ? () => _launchPhone(_phone) : null, onCopy: _phone.isNotEmpty ? () => _copyToClipboard(_phone, 'Phone') : null),
+            _infoRow(
+                icon: Icons.phone,
+                label: 'Phone',
+                value: _phone,
+                onTap: _phone.isNotEmpty ? () => _launchPhone(_phone) : null,
+                onCopy: _phone.isNotEmpty
+                    ? () => _copyToClipboard(_phone, 'Phone')
+                    : null),
             const Divider(),
-            _infoRow(icon: Icons.email, label: 'Email', value: _email, onTap: _email.isNotEmpty ? () => _launchEmail(_email) : null, onCopy: _email.isNotEmpty ? () => _copyToClipboard(_email, 'Email') : null),
+            _infoRow(
+                icon: Icons.email,
+                label: 'Email',
+                value: _email,
+                onTap: _email.isNotEmpty ? () => _launchEmail(_email) : null,
+                onCopy: _email.isNotEmpty
+                    ? () => _copyToClipboard(_email, 'Email')
+                    : null),
             const Divider(),
-            _infoRow(icon: Icons.work, label: 'Work', value: '${_workType.isNotEmpty ? '$_workType • ' : ''}${_workUnit.isNotEmpty ? _workUnit : ''}${_workplace.isNotEmpty ? ' @ $_workplace' : ''}'),
+            _infoRow(
+                icon: Icons.work,
+                label: 'Work',
+                value:
+                    '${_workType.isNotEmpty ? '$_workType • ' : ''}${_workUnit.isNotEmpty ? _workUnit : ''}${_workplace.isNotEmpty ? ' @ $_workplace' : ''}'),
           ],
         ),
       ),
     );
   }
 
-  Widget _infoRow({required IconData icon, required String label, required String value, VoidCallback? onTap, VoidCallback? onCopy}) {
+  Widget _infoRow(
+      {required IconData icon,
+      required String label,
+      required String value,
+      VoidCallback? onTap,
+      VoidCallback? onCopy}) {
     return ListTile(
       contentPadding: EdgeInsets.zero,
       leading: Icon(icon),
@@ -250,7 +269,9 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
         Expanded(
           child: ElevatedButton.icon(
             icon: const Icon(Icons.save),
-            label: _savingContact ? const Text('Saving...') : const Text('Save to Phone'),
+            label: _savingContact
+                ? const Text('Saving...')
+                : const Text('Save to Phone'),
             onPressed: _savingContact ? null : _saveContactToPhone,
           ),
         ),
@@ -277,13 +298,6 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (widget.userData['uid'] != null)
-              ListTile(
-                leading: const Icon(Icons.account_circle),
-                title: const Text('Open in App'),
-                subtitle: const Text('View full profile inside the app'),
-                onTap: _openInAppProfile,
-              ),
             ListTile(
               leading: const Icon(Icons.share),
               title: const Text('Share Contact'),
@@ -313,7 +327,8 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     if (_workType.isNotEmpty) buffer.writeln('Work: $_workType');
     if (_workUnit.isNotEmpty) buffer.writeln('Unit: $_workUnit');
     if (_workplace.isNotEmpty) buffer.writeln('Workplace: $_workplace');
-    if (widget.userData['uid'] != null) buffer.writeln('User ID: ${widget.userData['uid']}');
+    if (widget.userData['uid'] != null)
+      buffer.writeln('User ID: ${widget.userData['uid']}');
     return buffer.toString();
   }
 }

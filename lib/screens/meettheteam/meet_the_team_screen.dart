@@ -275,8 +275,11 @@ class TeamMemberCard extends StatelessWidget {
           Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (context) => const UserProfileDetailScreen(
-                //member: member, // hantar data kalau perlu
+              builder: (context) => UserProfileDetailScreen(
+                userData: {
+                  'name': member.name,
+                  'position': member.position,
+                },
               ),
             ),
           );

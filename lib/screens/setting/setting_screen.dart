@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_gen/gen_l10n/app_localizations.dart';
+import 'package:onboardx_tnb_app/l10n/app_localizations.dart';
 import 'package:onboardx_tnb_app/screens/setting/device_permission_screen.dart';
 import 'package:onboardx_tnb_app/screens/setting/language_translation_screen.dart';
 import 'package:onboardx_tnb_app/screens/setting/manage_your_account_screen.dart';

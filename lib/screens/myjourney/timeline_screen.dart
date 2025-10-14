@@ -1,10 +1,11 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:onboardx_tnb_app/l10n/app_localizations.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:onboardx_tnb_app/services/supabase_service.dart';
 
 class TimelineScreen extends StatefulWidget {
   const TimelineScreen({super.key});
@@ -19,16 +20,21 @@ class _TimelineScreenState extends State<TimelineScreen> {
   DateTime? _selectedDate;
   final ScrollController _scrollController = ScrollController();
 
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final SupabaseService _supabaseService = SupabaseService();
   User? _currentUser;
   List<Map<String, dynamic>> _events = [];
-  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _eventsSubscription;
+  StreamSubscription<List<Map<String, dynamic>>>? _eventsSubscription;
   StreamSubscription<User?>? _authSubscription;
   
   // New variables for user data and welcome section
   Map<String, dynamic>? _userData;
   bool _showWelcome = false;
   SharedPreferences? _prefs;
+
+  // Loading and refresh states
+  bool _isLoading = false;
+  bool _isAddingEvent = false;
+  final GlobalKey<RefreshIndicatorState> _refreshIndicatorKey = GlobalKey<RefreshIndicatorState>();
 
   // Controllers for the add event form
   final TextEditingController _titleController = TextEditingController();
@@ -39,8 +45,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
   final TextEditingController _linkController = TextEditingController();
   DateTime _newEventDate = DateTime.now();
   TimeOfDay _newEventStartTime = TimeOfDay.now();
-  TimeOfDay _newEventEndTime =
-      TimeOfDay(hour: TimeOfDay.now().hour + 1, minute: TimeOfDay.now().minute);
+  TimeOfDay _newEventEndTime = TimeOfDay(hour: TimeOfDay.now().hour + 1, minute: TimeOfDay.now().minute);
 
   @override
   void initState() {
@@ -54,8 +59,6 @@ class _TimelineScreenState extends State<TimelineScreen> {
       if (_currentUser != null) {
         _setupEventsListener();
         _fetchUserData();
-
-        // Initialize preferences for the logged-in user (per-user welcome)
         _initPreferencesForUser(_currentUser!.uid);
       } else {
         _eventsSubscription?.cancel();
@@ -114,15 +117,13 @@ class _TimelineScreenState extends State<TimelineScreen> {
     try {
       User? user = FirebaseAuth.instance.currentUser;
       if (user != null) {
-        DocumentSnapshot userDoc = await FirebaseFirestore.instance
-            .collection('users')
-            .doc(user.uid)
-            .get();
+        // Use SupabaseService to get user data
+        final userData = await _supabaseService.getUserProfileForApp(user.uid);
 
         if (!mounted) return;
-        if (userDoc.exists) {
+        if (userData != null) {
           setState(() {
-            _userData = userDoc.data() as Map<String, dynamic>?;
+            _userData = userData;
           });
         }
       }
@@ -152,115 +153,92 @@ class _TimelineScreenState extends State<TimelineScreen> {
     if (_currentUser == null) return;
 
     try {
-      final q = _firestore.collection('events').where('userId', isEqualTo: _currentUser!.uid);
+      // Use polling stream for more reliable updates
+      final stream = _supabaseService.getEventsStreamWithPolling(_currentUser!.uid);
 
-      _eventsSubscription = q.snapshots().listen((QuerySnapshot snapshot) {
-        // build loaded list first
-        final List<Map<String, dynamic>> loaded = snapshot.docs.map((doc) {
-          final data = doc.data() as Map<String, dynamic>;
-
-          // Parse date safely (Timestamp, DateTime, or custom string)
-          final rawDate = data['date'];
-          final DateTime eventDate = _parseEventDate(rawDate);
-
-          return {
-            'id': doc.id,
-            'title': data['title'] ?? '',
-            'startTime': data['startTime'] ?? '',
-            // accept 'endTime' or 'emTime'
-            'endTime': (data['endTime'] ?? data['emTime']) ?? '',
-            'location': data['location'] ?? '',
-            'description': data['description'] ?? '',
-            'link': data['link'] ?? '',
-            'date': eventDate,
-          };
-        }).toList();
-
-        // sort by date/time
-        loaded.sort((a, b) => (a['date'] as DateTime).compareTo(b['date'] as DateTime));
-
-        if (!mounted) return;
-        setState(() {
-          _events = loaded;
-        });
-
-        debugPrint('Loaded ${loaded.length} events');
+      _eventsSubscription = stream.listen((List<Map<String, dynamic>> events) {
+        _processEvents(events);
       }, onError: (error) {
-        debugPrint('Error listening to events: $error');
-        if (!mounted) return;
-        final msg = error.toString();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error loading events: $msg')),
-        );
+        debugPrint('Error in events stream: $error');
+        // Fallback to manual refresh if stream error
+        _refreshEvents();
       });
     } catch (e) {
       debugPrint('Failed to start events listener: $e');
+      // Fallback to manual refresh
+      _refreshEvents();
+    }
+  }
+
+  // Manual refresh method
+  Future<void> _refreshEvents() async {
+    if (_currentUser == null) return;
+
+    if (!mounted) return;
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final events = await _supabaseService.getEvents(_currentUser!.uid);
+      _processEvents(events);
+      
+      debugPrint('✅ Manually refreshed ${events.length} events');
+    } catch (e) {
+      debugPrint('Error manually refreshing events: $e');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to start events listener: ${e.toString()}')),
+        SnackBar(content: Text('Error refreshing events: $e')),
       );
+    } finally {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+      });
     }
+  }
+
+  // Process events data
+  void _processEvents(List<Map<String, dynamic>> events) {
+    final List<Map<String, dynamic>> loaded = events.map((event) {
+      final rawDate = event['date'];
+      final DateTime eventDate = _parseEventDate(rawDate);
+
+      return {
+        'id': event['id'],
+        'title': event['title'] ?? '',
+        'startTime': event['start_time'] ?? '',
+        'endTime': event['end_time'] ?? event['em_time'] ?? '',
+        'location': event['location'] ?? '',
+        'description': event['description'] ?? '',
+        'link': event['link'] ?? '',
+        'date': eventDate,
+      };
+    }).toList();
+
+    // sort by date/time
+    loaded.sort((a, b) => (a['date'] as DateTime).compareTo(b['date'] as DateTime));
+
+    if (!mounted) return;
+    setState(() {
+      _events = loaded;
+    });
+
+    debugPrint('🔄 Processed ${loaded.length} events');
   }
 
   DateTime _parseEventDate(dynamic raw) {
     if (raw == null) return DateTime.now();
 
-    // Firestore Timestamp
-    if (raw is Timestamp) {
-      return raw.toDate();
-    }
-
-    // Already DateTime
+    // Supabase returns DateTime directly
     if (raw is DateTime) {
       return raw;
     }
 
-    // If string - try multiple parsing strategies
+    // If string - try parsing
     if (raw is String) {
-      // 1) Try ISO8601
-      final iso = DateTime.tryParse(raw);
-      if (iso != null) return iso;
-
-      // 2) Try to extract "d MMMM yyyy at HH:mm:ss" pattern (e.g. "12 September 2025 at 12:16:00 UTC+8")
-      try {
-        final parts = raw.split(' at ');
-        final datePart = parts.isNotEmpty ? parts[0].trim() : raw;
-        DateTime baseDate = DateFormat('d MMMM yyyy').parseLoose(datePart);
-
-        if (parts.length > 1) {
-          final timePart = parts[1];
-          // extract hh:mm:ss via regex
-          final match = RegExp(r'(\d{1,2}:\d{2}:\d{2})').firstMatch(timePart);
-          if (match != null) {
-            final hm = match.group(1)!;
-            final tParts = hm.split(':').map((e) => int.tryParse(e) ?? 0).toList();
-            if (tParts.length >= 3) {
-              baseDate = DateTime(baseDate.year, baseDate.month, baseDate.day, tParts[0], tParts[1], tParts[2]);
-              return baseDate;
-            }
-          }
-          // fallback: try HH:mm
-          final match2 = RegExp(r'(\d{1,2}:\d{2})').firstMatch(timePart);
-          if (match2 != null) {
-            final hm2 = match2.group(1)!;
-            final tParts = hm2.split(':').map((e) => int.tryParse(e) ?? 0).toList();
-            baseDate = DateTime(baseDate.year, baseDate.month, baseDate.day, tParts[0], tParts[1]);
-            return baseDate;
-          }
-        }
-
-        return baseDate;
-      } catch (_) {
-        // ignore and fallback
-      }
-
-      // 3) As final fallback: try parsing only d MMMM yyyy
-      try {
-        return DateFormat('d MMMM yyyy').parseLoose(raw);
-      } catch (_) {}
-
-      // 4) Last resort: now
-      return DateTime.now();
+      final parsed = DateTime.tryParse(raw);
+      return parsed ?? DateTime.now();
     }
 
     // Unknown type -> fallback
@@ -439,7 +417,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
         return StatefulBuilder(builder: (context, setState) {
           return AlertDialog(
             backgroundColor: isDarkMode ? Colors.grey[900] : Colors.white,
-            title: Text('Add New Event', style: TextStyle(color: isDarkMode ? Colors.white : Colors.black)),
+            title: Text((AppLocalizations.of(context)!.addNewEvent), style: TextStyle(color: isDarkMode ? Colors.white : Colors.black)),
             content: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -448,7 +426,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
                     controller: _titleController,
                     style: TextStyle(color: isDarkMode ? Colors.white : Colors.black),
                     decoration: InputDecoration(
-                      labelText: 'Title *',
+                      labelText: (AppLocalizations.of(context)!.title),
                       labelStyle: TextStyle(color: isDarkMode ? Colors.grey[400] : Colors.grey[700]),
                       border: const OutlineInputBorder(),
                       enabledBorder: OutlineInputBorder(
@@ -496,7 +474,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
                           readOnly: true,
                           style: TextStyle(color: isDarkMode ? Colors.white : Colors.black),
                           decoration: InputDecoration(
-                            labelText: 'Start Time *',
+                            labelText: (AppLocalizations.of(context)!.startTime),
                             labelStyle: TextStyle(color: isDarkMode ? Colors.grey[400] : Colors.grey[700]),
                             border: const OutlineInputBorder(),
                             enabledBorder: OutlineInputBorder(
@@ -527,7 +505,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
                           readOnly: true,
                           style: TextStyle(color: isDarkMode ? Colors.white : Colors.black),
                           decoration: InputDecoration(
-                            labelText: 'End Time *',
+                            labelText: (AppLocalizations.of(context)!.endTime),
                             labelStyle: TextStyle(color: isDarkMode ? Colors.grey[400] : Colors.grey[700]),
                             border: const OutlineInputBorder(),
                             enabledBorder: OutlineInputBorder(
@@ -558,7 +536,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
                     controller: _locationController,
                     style: TextStyle(color: isDarkMode ? Colors.white : Colors.black),
                     decoration: InputDecoration(
-                      labelText: 'Location (optional)',
+                      labelText: (AppLocalizations.of(context)!.locationoptional),
                       labelStyle: TextStyle(color: isDarkMode ? Colors.grey[400] : Colors.grey[700]),
                       border: const OutlineInputBorder(),
                       enabledBorder: OutlineInputBorder(
@@ -575,7 +553,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
                     style: TextStyle(color: isDarkMode ? Colors.white : Colors.black),
                     maxLines: 3,
                     decoration: InputDecoration(
-                      labelText: 'Description (optional)',
+                      labelText: (AppLocalizations.of(context)!.descriptionoptional),
                       labelStyle: TextStyle(color: isDarkMode ? Colors.grey[400] : Colors.grey[700]),
                       border: const OutlineInputBorder(),
                       enabledBorder: OutlineInputBorder(
@@ -591,7 +569,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
                     controller: _linkController,
                     style: TextStyle(color: isDarkMode ? Colors.white : Colors.black),
                     decoration: InputDecoration(
-                      labelText: 'Link (optional)',
+                      labelText: (AppLocalizations.of(context)!.linkoptional),
                       labelStyle: TextStyle(color: isDarkMode ? Colors.grey[400] : Colors.grey[700]),
                       hintText: 'https://example.com',
                       border: const OutlineInputBorder(),
@@ -608,12 +586,17 @@ class _TimelineScreenState extends State<TimelineScreen> {
             ),
             actions: [
               TextButton(
-                onPressed: () => Navigator.pop(context), 
-                child: Text('Cancel', style: TextStyle(color: isDarkMode ? Colors.white : Colors.black))
+                onPressed: _isAddingEvent ? null : () => Navigator.pop(context), 
+                child: Text((AppLocalizations.of(context)!.cancel), style: TextStyle(color: isDarkMode ? Colors.white : Colors.black))
               ),
               ElevatedButton(
-                onPressed: () async {
+                onPressed: _isAddingEvent ? null : () async {
                   if (_titleController.text.isNotEmpty && _currentUser != null) {
+                    if (!mounted) return;
+                    setState(() {
+                      _isAddingEvent = true;
+                    });
+
                     try {
                       final DateTime composedDateTime = DateTime(
                         _newEventDate.year,
@@ -623,32 +606,69 @@ class _TimelineScreenState extends State<TimelineScreen> {
                         _newEventStartTime.minute,
                       );
 
-                      // Save date as Firestore Timestamp to avoid parsing issues later.
-                      await _firestore.collection('events').add({
+                      // Save to Supabase
+                      await _supabaseService.addEvent({
                         'title': _titleController.text,
-                        'startTime': _startTimeController.text,
-                        'endTime': _endTimeController.text, // prefer 'endTime'
-                        'emTime': _endTimeController.text, // keep emTime for compatibility
+                        'start_time': _startTimeController.text,
+                        'end_time': _endTimeController.text,
+                        'em_time': _endTimeController.text,
                         'location': _locationController.text,
                         'description': _descriptionController.text,
                         'link': _linkController.text,
-                        'date': Timestamp.fromDate(composedDateTime), // store as Timestamp
-                        'userId': _currentUser!.uid,
+                        'date': composedDateTime.toIso8601String(),
+                        'user_id': _currentUser!.uid,
                       });
+
+                      // FORCE REFRESH SETELAH ADD
+                      await _refreshEvents();
 
                       if (!mounted) return;
                       Navigator.pop(context);
+                      
+                      // Tampilkan snackbar konfirmasi
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Event "${_titleController.text}" added successfully'),
+                          duration: const Duration(seconds: 2),
+                          backgroundColor: Colors.green,
+                        ),
+                      );
+
                     } catch (e) {
                       debugPrint('Error adding event: $e');
                       if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to add event')));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Failed to add event: $e'),
+                          backgroundColor: Colors.red,
+                        ),
+                      );
+                    } finally {
+                      if (!mounted) return;
+                      setState(() {
+                        _isAddingEvent = false;
+                      });
                     }
                   } else {
                     if (!mounted) return;
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Title required & must be logged in')));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Title required & must be logged in'),
+                        backgroundColor: Colors.orange,
+                      ),
+                    );
                   }
                 },
-                child: const Text('Add Event'),
+                child: _isAddingEvent 
+                    ? SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2, 
+                          valueColor: AlwaysStoppedAnimation<Color>(isDarkMode ? Colors.white : Colors.black),
+                        ),
+                      )
+                    : Text((AppLocalizations.of(context)!.addEvent)),
               ),
             ],
           );
@@ -659,11 +679,38 @@ class _TimelineScreenState extends State<TimelineScreen> {
 
   Future<void> _deleteEvent(String eventId) async {
     try {
-      await _firestore.collection('events').doc(eventId).delete();
+      // Show loading
+      if (!mounted) return;
+      setState(() {
+        _isLoading = true;
+      });
+
+      await _supabaseService.deleteEvent(eventId);
+      
+      // Refresh events after delete
+      await _refreshEvents();
+      
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Event deleted successfully'),
+          backgroundColor: Colors.green,
+        ),
+      );
     } catch (e) {
       debugPrint('Error deleting event: $e');
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to delete event')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to delete event: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+      });
     }
   }
 
@@ -828,68 +875,104 @@ class _TimelineScreenState extends State<TimelineScreen> {
             child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
               Text(formattedDate, style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: isDarkMode ? Colors.white : Colors.black)),
               if (_isToday(_selectedDate!))
-                Text('Today', style: TextStyle(fontSize: 14, color: Colors.blue[700], fontWeight: FontWeight.bold)),
+                Text((AppLocalizations.of(context)!.today), style: TextStyle(fontSize: 14, color: Colors.blue[700], fontWeight: FontWeight.bold)),
             ]),
           ),
 
-          // Events list (Timeline)
+          // Events list (Timeline) with RefreshIndicator
           Expanded(
-            child: _events.isEmpty
-                ? Center(
-                    child: Text(
-                      'No events found',
-                      style: TextStyle(color: isDarkMode ? Colors.grey[400] : Colors.grey[600]),
-                    ),
-                  )
-                : eventsForSelectedDate.isEmpty
-                    ? Center(
-                        child: Text(
-                          'No events on $formattedDate',
-                          style: TextStyle(color: isDarkMode ? Colors.grey[400] : Colors.grey[600]),
-                        ),
-                      )
-                    : ListView.builder(
-                        itemCount: eventsForSelectedDate.length,
-                        itemBuilder: (context, index) {
-                          final event = eventsForSelectedDate[index];
-                          final eventDate = event['date'] as DateTime;
+            child: RefreshIndicator(
+              key: _refreshIndicatorKey,
+              onRefresh: _refreshEvents,
+              child: _isLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : _events.isEmpty
+                      ? Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.event_note, size: 64, color: isDarkMode ? Colors.grey[600] : Colors.grey[400]),
+                              const SizedBox(height: 16),
+                              Text(
+                                'No events found',
+                                style: TextStyle(color: isDarkMode ? Colors.grey[400] : Colors.grey[600]),
+                              ),
+                              const SizedBox(height: 8),
+                              TextButton(
+                                onPressed: _showAddEventDialog,
+                                child: const Text('Add your first event'),
+                              ),
+                            ],
+                          ),
+                        )
+                      : eventsForSelectedDate.isEmpty
+                          ? Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(Icons.calendar_today, size: 64, color: isDarkMode ? Colors.grey[600] : Colors.grey[400]),
+                                  const SizedBox(height: 16),
+                                  Text(
+                                    'No events on $formattedDate',
+                                    style: TextStyle(color: isDarkMode ? Colors.grey[400] : Colors.grey[600]),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  TextButton(
+                                    onPressed: _showAddEventDialog,
+                                    child: const Text('Add event for this date'),
+                                  ),
+                                ],
+                              ),
+                            )
+                          : ListView.builder(
+                              itemCount: eventsForSelectedDate.length,
+                              itemBuilder: (context, index) {
+                                final event = eventsForSelectedDate[index];
+                                final eventDate = event['date'] as DateTime;
 
-                          return Dismissible(
-                            key: Key(event['id']),
-                            direction: DismissDirection.endToStart,
-                            background: Container(
-                              color: Colors.red,
-                              alignment: Alignment.centerRight,
-                              padding: const EdgeInsets.only(right: 20),
-                              child: const Icon(Icons.delete, color: Colors.white),
-                            ),
-                            onDismissed: (direction) {
-                              _deleteEvent(event['id']);
-                            },
-                            child: TimelineEventItem(
-                              title: event['title'],
-                              startTime: event['startTime'],
-                              endTime: event['endTime'],
-                              location: event['location'],
-                              description: event['description'],
-                              link: event['link'],
-                              onLinkTap: (link) {
-                                if (link.isNotEmpty) {
-                                  _launchUrl(link);
-                                }
+                                return Dismissible(
+                                  key: Key(event['id']),
+                                  direction: DismissDirection.endToStart,
+                                  background: Container(
+                                    color: Colors.red,
+                                    alignment: Alignment.centerRight,
+                                    padding: const EdgeInsets.only(right: 20),
+                                    child: const Icon(Icons.delete, color: Colors.white),
+                                  ),
+                                  onDismissed: (direction) {
+                                    _deleteEvent(event['id']);
+                                  },
+                                  child: TimelineEventItem(
+                                    title: event['title'],
+                                    startTime: event['startTime'],
+                                    endTime: event['endTime'],
+                                    location: event['location'],
+                                    description: event['description'],
+                                    link: event['link'],
+                                    onLinkTap: (link) {
+                                      if (link.isNotEmpty) {
+                                        _launchUrl(link);
+                                      }
+                                    },
+                                    isDarkMode: isDarkMode,
+                                  ),
+                                );
                               },
-                              isDarkMode: isDarkMode,
                             ),
-                          );
-                        },
-                      ),
+            ),
           ),
         ],
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: _showAddEventDialog,
-        backgroundColor: const Color.fromRGBO(224, 124, 124, 1),
-        child: const Icon(Icons.add, color: Colors.white),
+        onPressed: _isAddingEvent ? null : _showAddEventDialog,
+        backgroundColor: _isAddingEvent ? Colors.grey : const Color.fromRGBO(224, 124, 124, 1),
+        child: _isAddingEvent 
+            ? const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation<Color>(Colors.white)),
+              )
+            : const Icon(Icons.add, color: Colors.white),
       ),
     );
   }
